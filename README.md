@@ -1,0 +1,179 @@
+# TuningAgent
+
+> 可评估/调试的通用 Coding Agent 框架
+
+基于 [Mini-Agent](https://github.com/MiniMax-AI/Mini-Agent) 开发的 Agent 评估框架，专注于模型、上下文和工具的系统化评估。
+
+## 项目定位
+
+TuningAgent 是一个用于学习研究的 **最小可行的** Agent 评估框架，用于：
+- 对比不同 LLM 模型在实际任务中的表现
+- 追踪和回溯 Agent 的执行过程
+- 评估工具和 Skills 的有效性
+
+
+## 核心能力
+
+### 1. 模型评估
+
+**当前支持：**
+- ✅ 配置文件切换不同 LLM（Anthropic/OpenAI）
+- ✅ 基础的多模型客户端
+
+**规划中：**
+- [ ] 模型池管理（单配置文件支持多模型）
+- [ ] 并行调用多模型对比结果
+
+### 2. 上下文追踪
+
+**当前支持：**
+- ✅ 基础执行日志
+
+**规划中：**
+- [ ] 完整保存执行轨迹（消息历史、工具调用、结果）
+- [ ] 从任意步骤重新执行
+- [ ] 上下文调试，系统上下文集中到一个文件，进行版本管理
+- [ ] 简单的执行可视化（步骤、token、工具调用）
+- [ ] 失败案例自动归档
+
+### 3. 工具评估
+
+**当前支持：**
+- ✅ 5个基础工具（文件读写、Bash、笔记）
+- ✅ 15+ Claude Skills
+
+**规划中：**
+- [ ] 工具单元测试框架
+- [ ] 调用统计（次数、成功率、耗时）
+- [ ] Skills 性能基准
+
+## 评估方法论
+
+### 小样本快速启动
+- 从少量代表性任务开始验证
+- 不依赖大规模数据集
+- 快速迭代，逐步扩展
+
+### LLM 作为评判者
+- 使用 LLM 评估任务完成质量
+- 结合人工审核关键案例
+- 建立可复现的评估标准
+
+## 快速开始
+
+### 安装
+
+```bash
+# 克隆项目
+cd TuningAgent
+
+# 安装依赖（推荐使用 uv）
+uv sync
+
+# 或使用 pip
+pip install -e .
+```
+
+### 配置
+
+```bash
+# 复制配置示例
+cp tuningagent/config/config-example.yaml tuningagent/config/config.yaml
+
+# 编辑配置，填入 API Key
+vim tuningagent/config/config.yaml
+```
+
+配置文件支持：
+- Anthropic API（Claude 模型）
+- OpenAI API（GPT 模型）
+- MiniMax API（MiniMax 模型）
+
+### 运行
+
+```bash
+# 交互式运行
+python -m tuningagent.cli
+
+# 或安装后直接调用
+pip install -e .
+tuningagent
+```
+
+## 项目结构
+
+```
+TuningAgent/
+├── tuningagent/              # 核心包
+│   ├── agent.py              # Agent 执行逻辑
+│   ├── llm/                  # LLM 客户端
+│   │   ├── anthropic_client.py
+│   │   ├── openai_client.py
+│   │   └── llm_wrapper.py
+│   ├── tools/                # 工具实现
+│   │   ├── bash_tool.py
+│   │   ├── file_tools.py
+│   │   ├── note_tool.py
+│   │   └── skill_tool.py
+│   ├── skills/               # Claude Skills（15+）
+│   ├── schema/               # 数据结构定义
+│   ├── config/               # 配置文件
+│   └── cli.py                # 命令行入口
+├── examples/                 # 示例代码
+├── tests/                    # 测试用例
+└── pyproject.toml            # 项目配置
+```
+
+## 开发计划
+
+### Phase 1: 模型池管理（MVP）
+- [ ] 支持单配置文件定义多个模型
+- [ ] 通过参数快速切换模型
+- [ ] 记录每个模型的执行结果
+
+### Phase 2: 执行追踪
+- [ ] 序列化保存完整对话历史
+- [ ] 工具调用的输入输出记录
+- [ ] 基础的步骤可视化
+
+### Phase 3: 工具评估
+- [ ] 工具调用统计
+- [ ] 失败案例收集
+- [ ] Skills 单元测试
+
+### Phase 4: 评估流程
+- [ ] 定义评估任务集
+- [ ] LLM 评判器实现
+- [ ] 评估报告生成
+
+## 技术栈
+
+- **Python**: 3.10+
+- **LLM 客户端**: Anthropic, OpenAI
+- **核心库**: Pydantic, HTTPX, PyYAML
+- **Skills**: Claude Skills（15+ 官方技能）
+
+## 当前限制
+
+- 仅支持单 Agent（无多 Agent 协作）
+- 需要手动配置 API Key
+- 执行追踪功能待完善
+- 无 Web UI（仅 CLI）
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request。重点关注：
+- 模型评估功能的完善
+- 执行追踪的实现
+- 工具测试框架的建立
+
+## License
+
+MIT License - 基于 [Mini-Agent](https://github.com/MiniMax-AI/Mini-Agent)
+
+## 相关资源
+
+- **原项目**: https://github.com/MiniMax-AI/Mini-Agent
+- **Claude Skills**: https://github.com/anthropics/skills
+- **Anthropic API**: https://docs.anthropic.com
+- **OpenAI API**: https://platform.openai.com
