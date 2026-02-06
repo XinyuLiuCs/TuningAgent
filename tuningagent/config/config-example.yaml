@@ -25,6 +25,25 @@ model: "MiniMax-M2.1"
 # For third-party APIs (e.g., https://api.siliconflow.cn/v1), api_base is used as-is.
 provider: "anthropic"  # Default: anthropic
 
+# ===== Multi-Model Pool (Optional) =====
+# Define multiple models and switch between them at runtime with /model <alias>.
+# When using this section, each model must have its own api_key.
+# The top-level api_key/api_base/model/provider fields are still used as the
+# fallback LLM config and are required unless every model is defined here.
+#
+# models:
+#   minimax-m2:
+#     api_key: "sk-xxx"
+#     api_base: "https://api.minimaxi.com"
+#     model: "MiniMax-M2.1"
+#     provider: "anthropic"
+#   claude-sonnet:
+#     api_key: "sk-ant-xxx"
+#     api_base: "https://api.anthropic.com"
+#     model: "claude-sonnet-4-20250514"
+#     provider: "anthropic"
+# default_model: "minimax-m2"
+
 # ===== Retry Configuration =====
 retry:
   enabled: true           # Enable retry mechanism
