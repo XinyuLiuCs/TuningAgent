@@ -29,7 +29,6 @@ from prompt_toolkit.styles import Style
 from tuningagent.agent import Agent
 from tuningagent.config import Config
 from tuningagent.llm.model_pool import ModelPool
-from tuningagent.schema import Message
 from tuningagent.tools.base import Tool
 from tuningagent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
 from tuningagent.tools.file_tools import EditTool, ReadTool, WriteTool
@@ -549,7 +548,7 @@ async def run_agent(workspace_dir: Path):
         system_prompt = system_prompt_path.read_text(encoding="utf-8")
         print(f"{Colors.GREEN}✅ Loaded system prompt (from: {system_prompt_path}){Colors.RESET}")
     else:
-        system_prompt = "You are TuningAgent, an intelligent assistant powered by {MODEL_NAME} that can help users complete various tasks."
+        system_prompt = "You are TuningAgent, a versatile AI assistant capable of executing complex tasks."
         print(f"{Colors.YELLOW}⚠️  System prompt not found, using default{Colors.RESET}")
 
     # 6. Inject Skills Metadata into System Prompt (Progressive Disclosure - Level 1)
@@ -565,9 +564,6 @@ async def run_agent(workspace_dir: Path):
     else:
         # Remove placeholder if skills not enabled
         system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
-
-    # 6b. Inject active model name into system prompt
-    system_prompt = system_prompt.replace("{MODEL_NAME}", model_pool.model)
 
     # 7. Create Agent (ModelPool implements the same generate() interface as LLMClient)
     agent = Agent(
@@ -687,16 +683,8 @@ async def run_agent(workspace_dir: Path):
                         # /model <alias> — switch model
                         new_alias = parts[1].strip()
                         try:
-                            old_model_name = model_pool.model
                             model_pool.set_active(new_alias)
-                            new_model_name = model_pool.model
-                            # Update the system message to reflect the new model identity
-                            # Use the live system prompt (includes workspace info) and swap the model name
-                            updated = agent.system_prompt.replace(old_model_name, new_model_name)
-                            agent.system_prompt = updated
-                            if agent.messages and agent.messages[0].role == "system":
-                                agent.messages[0] = Message(role="system", content=updated)
-                            print(f"{Colors.GREEN}✅ Switched to model '{new_alias}' ({new_model_name}){Colors.RESET}\n")
+                            print(f"{Colors.GREEN}✅ Switched to model '{new_alias}' ({model_pool.model}){Colors.RESET}\n")
                         except KeyError as e:
                             print(f"{Colors.RED}❌ {e}{Colors.RESET}\n")
                     continue
