@@ -45,17 +45,24 @@ class ModelPool:
             config: Model configuration.
             retry_config: Optional retry configuration.
         """
-        provider = (
-            LLMProvider.ANTHROPIC
-            if config.provider.lower() == "anthropic"
-            else LLMProvider.OPENAI
-        )
+        provider_map = {
+            "anthropic": LLMProvider.ANTHROPIC,
+            "openai": LLMProvider.OPENAI,
+            "bedrock": LLMProvider.BEDROCK,
+        }
+        provider_str = config.provider.lower()
+        if provider_str not in provider_map:
+            raise ValueError(f"Unknown provider '{config.provider}' for model alias '{alias}'")
+        provider = provider_map[provider_str]
+
         client = LLMClient(
             api_key=config.api_key,
             provider=provider,
             api_base=config.api_base,
             model=config.model,
             retry_config=retry_config,
+            aws_region=config.aws_region,
+            aws_profile=config.aws_profile,
         )
         self._clients[alias] = client
         self._stats[alias] = ModelStats(

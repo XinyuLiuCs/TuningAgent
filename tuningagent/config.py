@@ -22,10 +22,12 @@ class RetryConfig(BaseModel):
 class ModelConfig(BaseModel):
     """Single model configuration for multi-model pool."""
 
-    api_key: str
+    api_key: str = ""
     api_base: str = "https://api.minimax.io"
     model: str = "MiniMax-M2.1"
-    provider: str = "anthropic"  # "anthropic" or "openai"
+    provider: str = "anthropic"  # "anthropic", "openai", or "bedrock"
+    aws_region: str = ""
+    aws_profile: str = ""
 
 
 class LLMConfig(BaseModel):
@@ -123,13 +125,18 @@ class Config(BaseModel):
             for alias, model_data in data["models"].items():
                 if not isinstance(model_data, dict):
                     raise ValueError(f"Invalid model config for alias '{alias}'")
-                if "api_key" not in model_data or not model_data["api_key"]:
-                    raise ValueError(f"Model '{alias}' missing required field: api_key")
+                model_provider = model_data.get("provider", "anthropic").lower()
+                # api_key is required for non-bedrock providers
+                if model_provider != "bedrock":
+                    if "api_key" not in model_data or not model_data["api_key"]:
+                        raise ValueError(f"Model '{alias}' missing required field: api_key")
                 models[alias] = ModelConfig(
-                    api_key=model_data["api_key"],
+                    api_key=model_data.get("api_key", ""),
                     api_base=model_data.get("api_base", "https://api.minimax.io"),
                     model=model_data.get("model", "MiniMax-M2.1"),
                     provider=model_data.get("provider", "anthropic"),
+                    aws_region=model_data.get("aws_region", ""),
+                    aws_profile=model_data.get("aws_profile", ""),
                 )
             default_model = data.get("default_model", next(iter(models)))
 
