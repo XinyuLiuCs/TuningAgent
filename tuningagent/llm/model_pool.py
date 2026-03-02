@@ -4,12 +4,13 @@ Provides a unified generate() interface compatible with LLMClient so that
 Agent can use a ModelPool as a drop-in replacement (duck typing).
 """
 
+import asyncio
 import logging
 import time
 
 from ..config import ModelConfig
 from ..retry import RetryConfig
-from ..schema import LLMProvider, LLMResponse, Message, ModelStats
+from ..schema import HealthCheckResult, LLMProvider, LLMResponse, Message, ModelStats
 from .llm_wrapper import LLMClient
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,44 @@ class ModelPool:
             )
 
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Health check
+    # ------------------------------------------------------------------
+
+    async def check_health(self) -> list[HealthCheckResult]:
+        """Concurrently check health of all models in the pool.
+
+        Returns:
+            List of HealthCheckResult, one per model.
+        """
+
+        async def _check_one(alias: str, client: LLMClient) -> HealthCheckResult:
+            stats = self._stats[alias]
+            start = time.perf_counter()
+            try:
+                await client.health_check()
+                latency_ms = (time.perf_counter() - start) * 1000
+                return HealthCheckResult(
+                    alias=alias,
+                    model_name=stats.model_name,
+                    provider=stats.provider,
+                    available=True,
+                    latency_ms=latency_ms,
+                )
+            except Exception as e:
+                latency_ms = (time.perf_counter() - start) * 1000
+                return HealthCheckResult(
+                    alias=alias,
+                    model_name=stats.model_name,
+                    provider=stats.provider,
+                    available=False,
+                    latency_ms=latency_ms,
+                    error=str(e),
+                )
+
+        tasks = [_check_one(alias, client) for alias, client in self._clients.items()]
+        return list(await asyncio.gather(*tasks))
 
     # ------------------------------------------------------------------
     # LLMClient-compatible interface (duck typing)

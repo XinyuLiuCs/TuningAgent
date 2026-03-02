@@ -254,6 +254,15 @@ class AnthropicClient(LLMClientBase):
             usage=usage,
         )
 
+    async def health_check(self) -> bool:
+        """Minimal API call to verify connectivity."""
+        await self.client.messages.create(
+            model=self.model,
+            max_tokens=1,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        return True
+
     async def generate(
         self,
         messages: list[Message],

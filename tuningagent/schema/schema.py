@@ -83,3 +83,14 @@ class ModelStats(BaseModel):
             self.prompt_tokens += usage.prompt_tokens
             self.completion_tokens += usage.completion_tokens
             self.total_tokens += usage.total_tokens
+
+
+class HealthCheckResult(BaseModel):
+    """Result of a single model health check."""
+
+    alias: str
+    model_name: str
+    provider: str
+    available: bool
+    latency_ms: float = 0.0
+    error: str | None = None

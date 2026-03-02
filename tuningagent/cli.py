@@ -165,6 +165,30 @@ def read_log_file(filename: str) -> None:
         print(f"\n{Colors.RED}❌ Error reading file: {e}{Colors.RESET}\n")
 
 
+async def run_health_check(model_pool: "ModelPool") -> None:
+    """Run health check on all models and print results."""
+    from tuningagent.schema import HealthCheckResult
+
+    results: list[HealthCheckResult] = await model_pool.check_health()
+
+    all_ok = all(r.available for r in results)
+    header = "Health Check" if all_ok else "Health Check (issues detected)"
+    print(f"\n{Colors.BOLD}{Colors.BRIGHT_CYAN}{header}:{Colors.RESET}")
+
+    for r in results:
+        if r.available:
+            print(
+                f"  {Colors.BRIGHT_GREEN}OK{Colors.RESET}   {r.alias}: "
+                f"{r.model_name} [{r.provider}] ({r.latency_ms:.0f}ms)"
+            )
+        else:
+            print(
+                f"  {Colors.BRIGHT_RED}FAIL{Colors.RESET} {r.alias}: "
+                f"{r.model_name} [{r.provider}] - {r.error}"
+            )
+    print()
+
+
 def print_banner():
     """Print welcome banner with proper alignment"""
     BOX_WIDTH = 58
@@ -193,6 +217,7 @@ def print_help():
   {Colors.BRIGHT_GREEN}/clear{Colors.RESET}         - Clear session history (keep system prompt)
   {Colors.BRIGHT_GREEN}/history{Colors.RESET}       - Show current session message count
   {Colors.BRIGHT_GREEN}/stats{Colors.RESET}         - Show session statistics
+  {Colors.BRIGHT_GREEN}/health{Colors.RESET}        - Check connectivity of all models
   {Colors.BRIGHT_GREEN}/model{Colors.RESET}         - List all models in the pool
   {Colors.BRIGHT_GREEN}/model <alias>{Colors.RESET} - Switch to a different model
   {Colors.BRIGHT_GREEN}/model-stats{Colors.RESET}   - Show per-model execution statistics
@@ -536,6 +561,9 @@ async def run_agent(workspace_dir: Path):
         marker = f" {Colors.BRIGHT_CYAN}(active){Colors.RESET}" if m["active"] else ""
         print(f"   {Colors.DIM}-{Colors.RESET} {m['alias']}: {m['model']} [{m['provider']}]{marker}")
 
+    # 2b. Startup health check
+    await run_health_check(model_pool)
+
     # 3. Initialize base tools (independent of workspace)
     tools, skill_loader = await initialize_base_tools(config)
 
@@ -582,7 +610,7 @@ async def run_agent(workspace_dir: Path):
     # 9. Setup prompt_toolkit session
     # Command completer
     command_completer = WordCompleter(
-        ["/help", "/clear", "/history", "/stats", "/model", "/model-stats", "/log", "/exit", "/quit", "/q"],
+        ["/help", "/clear", "/history", "/stats", "/health", "/model", "/model-stats", "/log", "/exit", "/quit", "/q"],
         ignore_case=True,
         sentence=True,
     )
@@ -693,6 +721,10 @@ async def run_agent(workspace_dir: Path):
                     print(f"\n{Colors.BOLD}{Colors.BRIGHT_CYAN}Model Statistics:{Colors.RESET}")
                     print(model_pool.get_all_stats_summary())
                     print()
+                    continue
+
+                elif command == "/health":
+                    await run_health_check(model_pool)
                     continue
 
                 elif command == "/log" or command.startswith("/log "):

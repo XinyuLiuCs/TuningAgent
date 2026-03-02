@@ -2,6 +2,7 @@
 
 from .schema import (
     FunctionCall,
+    HealthCheckResult,
     LLMProvider,
     LLMResponse,
     Message,
@@ -12,6 +13,7 @@ from .schema import (
 
 __all__ = [
     "FunctionCall",
+    "HealthCheckResult",
     "LLMProvider",
     "LLMResponse",
     "Message",

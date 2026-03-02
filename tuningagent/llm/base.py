@@ -82,3 +82,8 @@ class LLMClientBase(ABC):
             Tuple of (system_message, api_messages)
         """
         pass
+
+    @abstractmethod
+    async def health_check(self) -> bool:
+        """Minimal API call to verify connectivity. Raises on failure."""
+        pass
