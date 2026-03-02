@@ -110,6 +110,10 @@ class LLMClient:
         """Set retry callback."""
         self._client.retry_callback = value
 
+    async def health_check(self) -> bool:
+        """Delegate health check to the underlying client."""
+        return await self._client.health_check()
+
     async def generate(
         self,
         messages: list[Message],

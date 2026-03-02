@@ -26,10 +26,9 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 
-from tuningagent import LLMClient
 from tuningagent.agent import Agent
 from tuningagent.config import Config
-from tuningagent.schema import LLMProvider
+from tuningagent.llm.model_pool import ModelPool
 from tuningagent.tools.base import Tool
 from tuningagent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
 from tuningagent.tools.file_tools import EditTool, ReadTool, WriteTool
@@ -166,6 +165,30 @@ def read_log_file(filename: str) -> None:
         print(f"\n{Colors.RED}❌ Error reading file: {e}{Colors.RESET}\n")
 
 
+async def run_health_check(model_pool: "ModelPool") -> None:
+    """Run health check on all models and print results."""
+    from tuningagent.schema import HealthCheckResult
+
+    results: list[HealthCheckResult] = await model_pool.check_health()
+
+    all_ok = all(r.available for r in results)
+    header = "Health Check" if all_ok else "Health Check (issues detected)"
+    print(f"\n{Colors.BOLD}{Colors.BRIGHT_CYAN}{header}:{Colors.RESET}")
+
+    for r in results:
+        if r.available:
+            print(
+                f"  {Colors.BRIGHT_GREEN}OK{Colors.RESET}   {r.alias}: "
+                f"{r.model_name} [{r.provider}] ({r.latency_ms:.0f}ms)"
+            )
+        else:
+            print(
+                f"  {Colors.BRIGHT_RED}FAIL{Colors.RESET} {r.alias}: "
+                f"{r.model_name} [{r.provider}] - {r.error}"
+            )
+    print()
+
+
 def print_banner():
     """Print welcome banner with proper alignment"""
     BOX_WIDTH = 58
@@ -190,13 +213,17 @@ def print_help():
     """Print help information"""
     help_text = f"""
 {Colors.BOLD}{Colors.BRIGHT_YELLOW}Available Commands:{Colors.RESET}
-  {Colors.BRIGHT_GREEN}/help{Colors.RESET}      - Show this help message
-  {Colors.BRIGHT_GREEN}/clear{Colors.RESET}     - Clear session history (keep system prompt)
-  {Colors.BRIGHT_GREEN}/history{Colors.RESET}   - Show current session message count
-  {Colors.BRIGHT_GREEN}/stats{Colors.RESET}     - Show session statistics
-  {Colors.BRIGHT_GREEN}/log{Colors.RESET}       - Show log directory and recent files
-  {Colors.BRIGHT_GREEN}/log <file>{Colors.RESET} - Read a specific log file
-  {Colors.BRIGHT_GREEN}/exit{Colors.RESET}      - Exit program (also: exit, quit, q)
+  {Colors.BRIGHT_GREEN}/help{Colors.RESET}          - Show this help message
+  {Colors.BRIGHT_GREEN}/clear{Colors.RESET}         - Clear session history (keep system prompt)
+  {Colors.BRIGHT_GREEN}/history{Colors.RESET}       - Show current session message count
+  {Colors.BRIGHT_GREEN}/stats{Colors.RESET}         - Show session statistics
+  {Colors.BRIGHT_GREEN}/health{Colors.RESET}        - Check connectivity of all models
+  {Colors.BRIGHT_GREEN}/model{Colors.RESET}         - List all models in the pool
+  {Colors.BRIGHT_GREEN}/model <alias>{Colors.RESET} - Switch to a different model
+  {Colors.BRIGHT_GREEN}/model-stats{Colors.RESET}   - Show per-model execution statistics
+  {Colors.BRIGHT_GREEN}/log{Colors.RESET}           - Show log directory and recent files
+  {Colors.BRIGHT_GREEN}/log <file>{Colors.RESET}    - Read a specific log file
+  {Colors.BRIGHT_GREEN}/exit{Colors.RESET}          - Exit program (also: exit, quit, q)
 
 {Colors.BOLD}{Colors.BRIGHT_YELLOW}Keyboard Shortcuts:{Colors.RESET}
   {Colors.BRIGHT_CYAN}Esc{Colors.RESET}        - Cancel current agent execution
@@ -256,7 +283,7 @@ def print_session_info(agent: Agent, workspace_dir: Path, model: str):
     print()
 
 
-def print_stats(agent: Agent, session_start: datetime):
+def print_stats(agent: Agent, session_start: datetime, model_pool: ModelPool | None = None):
     """Print session statistics"""
     duration = datetime.now() - session_start
     hours, remainder = divmod(int(duration.total_seconds()), 3600)
@@ -277,6 +304,23 @@ def print_stats(agent: Agent, session_start: datetime):
     print(f"  Available Tools: {len(agent.tools)}")
     if agent.api_total_tokens > 0:
         print(f"  API Tokens Used: {Colors.BRIGHT_MAGENTA}{agent.api_total_tokens:,}{Colors.RESET}")
+
+    # Per-model stats
+    if model_pool:
+        all_stats = model_pool.get_stats()
+        has_calls = any(s.call_count > 0 for s in all_stats.values())
+        if has_calls:
+            print(f"\n  {Colors.BOLD}Per-Model Stats:{Colors.RESET}")
+            for alias, stats in all_stats.items():
+                if stats.call_count > 0:
+                    marker = " *" if alias == model_pool.active_alias else ""
+                    print(
+                        f"    {alias}{marker}: {stats.call_count} calls, "
+                        f"{stats.total_tokens:,} tokens, "
+                        f"avg {stats.avg_latency_s:.2f}s"
+                        + (f", {stats.error_count} errors" if stats.error_count else "")
+                    )
+
     print(f"{Colors.DIM}{'─' * 40}{Colors.RESET}\n")
 
 
@@ -476,7 +520,7 @@ async def run_agent(workspace_dir: Path):
         print(f"{Colors.RED}❌ Error: Failed to load configuration file: {e}{Colors.RESET}")
         return
 
-    # 2. Initialize LLM client
+    # 2. Initialize Model Pool
     from tuningagent.retry import RetryConfig as RetryConfigBase
 
     # Convert configuration format
@@ -496,21 +540,29 @@ async def run_agent(workspace_dir: Path):
         next_delay = retry_config.calculate_delay(attempt - 1)
         print(f"{Colors.DIM}   Retrying in {next_delay:.1f}s (attempt {attempt + 1})...{Colors.RESET}")
 
-    # Convert provider string to LLMProvider enum
-    provider = LLMProvider.ANTHROPIC if config.llm.provider.lower() == "anthropic" else LLMProvider.OPENAI
+    model_pool = ModelPool()
+    for alias, model_cfg in config.models.items():
+        model_pool.add_model(
+            alias,
+            model_cfg,
+            retry_config=retry_config if config.llm.retry.enabled else None,
+        )
+    model_pool.set_active(config.default_model)
 
-    llm_client = LLMClient(
-        api_key=config.llm.api_key,
-        provider=provider,
-        api_base=config.llm.api_base,
-        model=config.llm.model,
-        retry_config=retry_config if config.llm.retry.enabled else None,
-    )
-
-    # Set retry callback
+    # Set retry callback on all clients
     if config.llm.retry.enabled:
-        llm_client.retry_callback = on_retry
+        model_pool.retry_callback = on_retry
         print(f"{Colors.GREEN}✅ LLM retry mechanism enabled (max {config.llm.retry.max_retries} retries){Colors.RESET}")
+
+    # Print model pool info
+    models_info = model_pool.list_models()
+    print(f"{Colors.GREEN}✅ Model pool: {len(models_info)} model(s){Colors.RESET}")
+    for m in models_info:
+        marker = f" {Colors.BRIGHT_CYAN}(active){Colors.RESET}" if m["active"] else ""
+        print(f"   {Colors.DIM}-{Colors.RESET} {m['alias']}: {m['model']} [{m['provider']}]{marker}")
+
+    # 2b. Start health check in background (runs concurrently with tool/prompt init)
+    health_check_task = asyncio.create_task(run_health_check(model_pool))
 
     # 3. Initialize base tools (independent of workspace)
     tools, skill_loader = await initialize_base_tools(config)
@@ -524,7 +576,7 @@ async def run_agent(workspace_dir: Path):
         system_prompt = system_prompt_path.read_text(encoding="utf-8")
         print(f"{Colors.GREEN}✅ Loaded system prompt (from: {system_prompt_path}){Colors.RESET}")
     else:
-        system_prompt = "You are Mini-Agent, an intelligent assistant powered by MiniMax M2.1 that can help users complete various tasks."
+        system_prompt = "You are TuningAgent, a versatile AI assistant capable of executing complex tasks."
         print(f"{Colors.YELLOW}⚠️  System prompt not found, using default{Colors.RESET}")
 
     # 6. Inject Skills Metadata into System Prompt (Progressive Disclosure - Level 1)
@@ -541,9 +593,9 @@ async def run_agent(workspace_dir: Path):
         # Remove placeholder if skills not enabled
         system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
 
-    # 7. Create Agent
+    # 7. Create Agent (ModelPool implements the same generate() interface as LLMClient)
     agent = Agent(
-        llm_client=llm_client,
+        llm_client=model_pool,
         system_prompt=system_prompt,
         tools=tools,
         max_steps=config.agent.max_steps,
@@ -552,12 +604,19 @@ async def run_agent(workspace_dir: Path):
 
     # 8. Display welcome information
     print_banner()
-    print_session_info(agent, workspace_dir, config.llm.model)
+    pool_label = f"{model_pool.active_alias} ({model_pool.model})" if len(models_info) > 1 else model_pool.model
+    print_session_info(agent, workspace_dir, pool_label)
+
+    # 8b. Await startup health check (printing happens inside run_health_check)
+    try:
+        await health_check_task
+    except Exception as e:
+        print(f"{Colors.YELLOW}⚠️  Health check failed: {e}{Colors.RESET}\n")
 
     # 9. Setup prompt_toolkit session
     # Command completer
     command_completer = WordCompleter(
-        ["/help", "/clear", "/history", "/stats", "/log", "/exit", "/quit", "/q"],
+        ["/help", "/clear", "/history", "/stats", "/health", "/model", "/model-stats", "/log", "/exit", "/quit", "/q"],
         ignore_case=True,
         sentence=True,
     )
@@ -623,7 +682,7 @@ async def run_agent(workspace_dir: Path):
 
                 if command in ["/exit", "/quit", "/q"]:
                     print(f"\n{Colors.BRIGHT_YELLOW}👋 Goodbye! Thanks for using Mini Agent{Colors.RESET}\n")
-                    print_stats(agent, session_start)
+                    print_stats(agent, session_start, model_pool)
                     break
 
                 elif command == "/help":
@@ -642,7 +701,36 @@ async def run_agent(workspace_dir: Path):
                     continue
 
                 elif command == "/stats":
-                    print_stats(agent, session_start)
+                    print_stats(agent, session_start, model_pool)
+                    continue
+
+                elif command == "/model" or command.startswith("/model "):
+                    parts = user_input.split(maxsplit=1)
+                    if len(parts) == 1:
+                        # /model — list all models
+                        print(f"\n{Colors.BOLD}{Colors.BRIGHT_CYAN}Model Pool:{Colors.RESET}")
+                        for m in model_pool.list_models():
+                            active_marker = f" {Colors.BRIGHT_GREEN}<- active{Colors.RESET}" if m["active"] else ""
+                            print(f"  {Colors.BRIGHT_WHITE}{m['alias']}{Colors.RESET}: {m['model']} [{m['provider']}]{active_marker}")
+                        print()
+                    else:
+                        # /model <alias> — switch model
+                        new_alias = parts[1].strip()
+                        try:
+                            model_pool.set_active(new_alias)
+                            print(f"{Colors.GREEN}✅ Switched to model '{new_alias}' ({model_pool.model}){Colors.RESET}\n")
+                        except KeyError as e:
+                            print(f"{Colors.RED}❌ {e}{Colors.RESET}\n")
+                    continue
+
+                elif command == "/model-stats":
+                    print(f"\n{Colors.BOLD}{Colors.BRIGHT_CYAN}Model Statistics:{Colors.RESET}")
+                    print(model_pool.get_all_stats_summary())
+                    print()
+                    continue
+
+                elif command == "/health":
+                    await run_health_check(model_pool)
                     continue
 
                 elif command == "/log" or command.startswith("/log "):
@@ -665,7 +753,7 @@ async def run_agent(workspace_dir: Path):
             # Normal conversation - exit check
             if user_input.lower() in ["exit", "quit", "q"]:
                 print(f"\n{Colors.BRIGHT_YELLOW}👋 Goodbye! Thanks for using Mini Agent{Colors.RESET}\n")
-                print_stats(agent, session_start)
+                print_stats(agent, session_start, model_pool)
                 break
 
             # Run Agent with Esc cancellation support
@@ -755,7 +843,7 @@ async def run_agent(workspace_dir: Path):
 
         except KeyboardInterrupt:
             print(f"\n\n{Colors.BRIGHT_YELLOW}👋 Interrupt signal detected, exiting...{Colors.RESET}\n")
-            print_stats(agent, session_start)
+            print_stats(agent, session_start, model_pool)
             break
 
         except Exception as e:

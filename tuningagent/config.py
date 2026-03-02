@@ -19,6 +19,15 @@ class RetryConfig(BaseModel):
     exponential_base: float = 2.0
 
 
+class ModelConfig(BaseModel):
+    """Single model configuration for multi-model pool."""
+
+    api_key: str
+    api_base: str = "https://api.minimax.io"
+    model: str = "MiniMax-M2.1"
+    provider: str = "anthropic"  # "anthropic" or "openai"
+
+
 class LLMConfig(BaseModel):
     """LLM configuration"""
 
@@ -69,6 +78,8 @@ class Config(BaseModel):
     llm: LLMConfig
     agent: AgentConfig
     tools: ToolsConfig
+    models: dict[str, ModelConfig] = Field(default_factory=dict)
+    default_model: str = "default"
 
     @classmethod
     def load(cls) -> "Config":
@@ -103,12 +114,51 @@ class Config(BaseModel):
         if not data:
             raise ValueError("Configuration file is empty")
 
-        # Parse LLM configuration
-        if "api_key" not in data:
-            raise ValueError("Configuration file missing required field: api_key")
+        # Parse multi-model configuration
+        models: dict[str, ModelConfig] = {}
+        default_model = "default"
 
-        if not data["api_key"] or data["api_key"] == "YOUR_API_KEY_HERE":
-            raise ValueError("Please configure a valid API Key")
+        if "models" in data and isinstance(data["models"], dict):
+            # New multi-model format
+            for alias, model_data in data["models"].items():
+                if not isinstance(model_data, dict):
+                    raise ValueError(f"Invalid model config for alias '{alias}'")
+                if "api_key" not in model_data or not model_data["api_key"]:
+                    raise ValueError(f"Model '{alias}' missing required field: api_key")
+                models[alias] = ModelConfig(
+                    api_key=model_data["api_key"],
+                    api_base=model_data.get("api_base", "https://api.minimax.io"),
+                    model=model_data.get("model", "MiniMax-M2.1"),
+                    provider=model_data.get("provider", "anthropic"),
+                )
+            default_model = data.get("default_model", next(iter(models)))
+
+            # For backward compat, use the default model's fields as the top-level llm config
+            dm = models[default_model]
+            api_key = data.get("api_key", dm.api_key)
+            api_base = data.get("api_base", dm.api_base)
+            model_name = data.get("model", dm.model)
+            provider = data.get("provider", dm.provider)
+        else:
+            # Legacy flat format — require top-level api_key
+            if "api_key" not in data:
+                raise ValueError("Configuration file missing required field: api_key")
+            if not data["api_key"] or data["api_key"] == "YOUR_API_KEY_HERE":
+                raise ValueError("Please configure a valid API Key")
+
+            api_key = data["api_key"]
+            api_base = data.get("api_base", "https://api.minimax.io")
+            model_name = data.get("model", "MiniMax-M2.1")
+            provider = data.get("provider", "anthropic")
+
+            # Build a single-model pool from flat fields
+            models["default"] = ModelConfig(
+                api_key=api_key,
+                api_base=api_base,
+                model=model_name,
+                provider=provider,
+            )
+            default_model = "default"
 
         # Parse retry configuration
         retry_data = data.get("retry", {})
@@ -121,10 +171,10 @@ class Config(BaseModel):
         )
 
         llm_config = LLMConfig(
-            api_key=data["api_key"],
-            api_base=data.get("api_base", "https://api.minimax.io"),
-            model=data.get("model", "MiniMax-M2.1"),
-            provider=data.get("provider", "anthropic"),
+            api_key=api_key,
+            api_base=api_base,
+            model=model_name,
+            provider=provider,
             retry=retry_config,
         )
 
@@ -161,6 +211,8 @@ class Config(BaseModel):
             llm=llm_config,
             agent=agent_config,
             tools=tools_config,
+            models=models,
+            default_model=default_model,
         )
 
     @staticmethod

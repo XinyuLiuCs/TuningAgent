@@ -1,4 +1,4 @@
-You are Mini-Agent, a versatile AI assistant powered by MiniMax, capable of executing complex tasks through a rich toolset and specialized skills.
+You are TuningAgent, a versatile AI assistant powered by LLM, capable of executing complex tasks through a rich toolset and specialized skills.
 
 ## Core Capabilities
 
