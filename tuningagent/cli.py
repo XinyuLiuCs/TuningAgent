@@ -562,7 +562,7 @@ async def run_agent(workspace_dir: Path):
         print(f"   {Colors.DIM}-{Colors.RESET} {m['alias']}: {m['model']} [{m['provider']}]{marker}")
 
     # 2b. Start health check in background (runs concurrently with tool/prompt init)
-    health_check_task = asyncio.create_task(model_pool.check_health())
+    health_check_task = asyncio.create_task(run_health_check(model_pool))
 
     # 3. Initialize base tools (independent of workspace)
     tools, skill_loader = await initialize_base_tools(config)
@@ -607,24 +607,9 @@ async def run_agent(workspace_dir: Path):
     pool_label = f"{model_pool.active_alias} ({model_pool.model})" if len(models_info) > 1 else model_pool.model
     print_session_info(agent, workspace_dir, pool_label)
 
-    # 8b. Collect startup health check results
+    # 8b. Await startup health check (printing happens inside run_health_check)
     try:
-        health_results = await health_check_task
-        all_ok = all(r.available for r in health_results)
-        header = "Health Check" if all_ok else "Health Check (issues detected)"
-        print(f"{Colors.BOLD}{Colors.BRIGHT_CYAN}{header}:{Colors.RESET}")
-        for r in health_results:
-            if r.available:
-                print(
-                    f"  {Colors.BRIGHT_GREEN}OK{Colors.RESET}   {r.alias}: "
-                    f"{r.model_name} [{r.provider}] ({r.latency_ms:.0f}ms)"
-                )
-            else:
-                print(
-                    f"  {Colors.BRIGHT_RED}FAIL{Colors.RESET} {r.alias}: "
-                    f"{r.model_name} [{r.provider}] - {r.error}"
-                )
-        print()
+        await health_check_task
     except Exception as e:
         print(f"{Colors.YELLOW}⚠️  Health check failed: {e}{Colors.RESET}\n")
 
