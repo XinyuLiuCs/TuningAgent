@@ -10,6 +10,7 @@ from ..retry import RetryConfig
 from ..schema import LLMProvider, LLMResponse, Message
 from .anthropic_client import AnthropicClient
 from .base import LLMClientBase
+from .bedrock_client import BedrockClient
 from .openai_client import OpenAIClient
 
 logger = logging.getLogger(__name__)
@@ -35,70 +36,85 @@ class LLMClient:
 
     def __init__(
         self,
-        api_key: str,
+        api_key: str = "",
         provider: LLMProvider = LLMProvider.ANTHROPIC,
         api_base: str = "https://api.minimaxi.com",
         model: str = "MiniMax-M2.1",
         retry_config: RetryConfig | None = None,
+        aws_region: str = "",
+        aws_profile: str = "",
     ):
         """Initialize LLM client with specified provider.
 
         Args:
-            api_key: API key for authentication
-            provider: LLM provider (anthropic or openai)
+            api_key: API key for authentication (unused for bedrock)
+            provider: LLM provider (anthropic, openai, or bedrock)
             api_base: Base URL for the API (default: https://api.minimaxi.com)
                      For MiniMax API, suffix is auto-appended based on provider.
                      For third-party APIs (e.g., https://api.siliconflow.cn/v1), used as-is.
+                     Unused for bedrock provider.
             model: Model name to use
             retry_config: Optional retry configuration
+            aws_region: AWS region for bedrock provider
+            aws_profile: AWS profile for bedrock provider
         """
         self.provider = provider
         self.api_key = api_key
         self.model = model
         self.retry_config = retry_config or RetryConfig()
 
-        # Normalize api_base (remove trailing slash)
-        api_base = api_base.rstrip("/")
-
-        # Check if this is a MiniMax API endpoint
-        is_minimax = any(domain in api_base for domain in self.MINIMAX_DOMAINS)
-
-        if is_minimax:
-            # For MiniMax API, ensure correct suffix based on provider
-            # Strip any existing suffix first
-            api_base = api_base.replace("/anthropic", "").replace("/v1", "")
-            if provider == LLMProvider.ANTHROPIC:
-                full_api_base = f"{api_base}/anthropic"
-            elif provider == LLMProvider.OPENAI:
-                full_api_base = f"{api_base}/v1"
-            else:
-                raise ValueError(f"Unsupported provider: {provider}")
-        else:
-            # For third-party APIs, use api_base as-is
-            full_api_base = api_base
-
-        self.api_base = full_api_base
-
         # Instantiate the appropriate client
         self._client: LLMClientBase
-        if provider == LLMProvider.ANTHROPIC:
-            self._client = AnthropicClient(
-                api_key=api_key,
-                api_base=full_api_base,
+
+        if provider == LLMProvider.BEDROCK:
+            self.api_base = ""
+            self._client = BedrockClient(
                 model=model,
-                retry_config=retry_config,
-            )
-        elif provider == LLMProvider.OPENAI:
-            self._client = OpenAIClient(
-                api_key=api_key,
-                api_base=full_api_base,
-                model=model,
+                aws_region=aws_region,
+                aws_profile=aws_profile,
                 retry_config=retry_config,
             )
         else:
-            raise ValueError(f"Unsupported provider: {provider}")
+            # Normalize api_base (remove trailing slash)
+            api_base = api_base.rstrip("/")
 
-        logger.info("Initialized LLM client with provider: %s, api_base: %s", provider, full_api_base)
+            # Check if this is a MiniMax API endpoint
+            is_minimax = any(domain in api_base for domain in self.MINIMAX_DOMAINS)
+
+            if is_minimax:
+                # For MiniMax API, ensure correct suffix based on provider
+                # Strip any existing suffix first
+                api_base = api_base.replace("/anthropic", "").replace("/v1", "")
+                if provider == LLMProvider.ANTHROPIC:
+                    full_api_base = f"{api_base}/anthropic"
+                elif provider == LLMProvider.OPENAI:
+                    full_api_base = f"{api_base}/v1"
+                else:
+                    raise ValueError(f"Unsupported provider: {provider}")
+            else:
+                # For third-party APIs, use api_base as-is
+                full_api_base = api_base
+
+            self.api_base = full_api_base
+
+            if provider == LLMProvider.ANTHROPIC:
+                self._client = AnthropicClient(
+                    api_key=api_key,
+                    api_base=full_api_base,
+                    model=model,
+                    retry_config=retry_config,
+                )
+            elif provider == LLMProvider.OPENAI:
+                self._client = OpenAIClient(
+                    api_key=api_key,
+                    api_base=full_api_base,
+                    model=model,
+                    retry_config=retry_config,
+                )
+            else:
+                raise ValueError(f"Unsupported provider: {provider}")
+
+        logger.info("Initialized LLM client with provider: %s", provider)
 
     @property
     def retry_callback(self):
