@@ -780,7 +780,10 @@ async def run_agent(workspace_dir: Path):
                     continue
 
                 elif command == "/context":
-                    context_data = [m.model_dump() for m in agent.messages]
+                    context_data = {
+                        "messages": [m.model_dump() for m in agent.messages],
+                        "tools": [t.to_schema() for t in agent.tools.values()],
+                    }
                     print(json.dumps(context_data, indent=2, ensure_ascii=False))
                     continue
 
