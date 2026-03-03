@@ -333,8 +333,8 @@ Requirements:
         if cancel_event is not None:
             self.cancel_event = cancel_event
 
-        # Start new run, initialize log file
-        self.logger.start_new_run()
+        # Start new turn (lazily creates log file on first call)
+        self.logger.start_turn()
         print(f"{Colors.DIM}📝 Log file: {self.logger.get_log_file_path()}{Colors.RESET}")
 
         step = 0
@@ -346,6 +346,7 @@ Requirements:
                 self._cleanup_incomplete_messages()
                 cancel_msg = "Task cancelled by user."
                 print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {cancel_msg}{Colors.RESET}")
+                self.logger.end_turn(cancel_msg)
                 return cancel_msg
 
             step_start_time = perf_counter()
@@ -361,6 +362,9 @@ Requirements:
             print(f"\n{Colors.DIM}╭{'─' * BOX_WIDTH}╮{Colors.RESET}")
             print(f"{Colors.DIM}│{Colors.RESET} {step_text}{' ' * padding}{Colors.DIM}│{Colors.RESET}")
             print(f"{Colors.DIM}╰{'─' * BOX_WIDTH}╯{Colors.RESET}")
+
+            # Track step in logger (1-based)
+            self.logger.start_step(step + 1)
 
             # Get tool list for LLM call
             tool_list = list(self.tools.values())
@@ -380,6 +384,7 @@ Requirements:
                 else:
                     error_msg = f"LLM call failed: {str(e)}"
                     print(f"\n{Colors.BRIGHT_RED}❌ Error:{Colors.RESET} {error_msg}")
+                self.logger.end_turn(error_msg)
                 return error_msg
 
             # Accumulate API reported token usage
@@ -418,6 +423,7 @@ Requirements:
                 step_elapsed = perf_counter() - step_start_time
                 total_elapsed = perf_counter() - run_start_time
                 print(f"\n{Colors.DIM}⏱️  Step {step + 1} completed in {step_elapsed:.2f}s (total: {total_elapsed:.2f}s){Colors.RESET}")
+                self.logger.end_turn(response.content)
                 return response.content
 
             # Check for cancellation before executing tools
@@ -425,6 +431,7 @@ Requirements:
                 self._cleanup_incomplete_messages()
                 cancel_msg = "Task cancelled by user."
                 print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {cancel_msg}{Colors.RESET}")
+                self.logger.end_turn(cancel_msg)
                 return cancel_msg
 
             # Execute tool calls
@@ -505,6 +512,7 @@ Requirements:
                     self._cleanup_incomplete_messages()
                     cancel_msg = "Task cancelled by user."
                     print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {cancel_msg}{Colors.RESET}")
+                    self.logger.end_turn(cancel_msg)
                     return cancel_msg
 
             step_elapsed = perf_counter() - step_start_time
@@ -516,6 +524,7 @@ Requirements:
         # Max steps reached
         error_msg = f"Task couldn't be completed after {self.max_steps} steps."
         print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {error_msg}{Colors.RESET}")
+        self.logger.end_turn(error_msg)
         return error_msg
 
     def get_history(self) -> list[Message]:

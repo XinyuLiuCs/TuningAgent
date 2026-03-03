@@ -81,7 +81,7 @@ def show_log_directory(open_file_manager: bool = True) -> None:
         print(f"{Colors.RED}Log directory does not exist: {log_dir}{Colors.RESET}\n")
         return
 
-    log_files = list(log_dir.glob("*.log"))
+    log_files = list(log_dir.glob("*.log")) + list(log_dir.glob("*.jsonl"))
 
     if not log_files:
         print(f"{Colors.YELLOW}No log files found in directory.{Colors.RESET}\n")
