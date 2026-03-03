@@ -527,6 +527,82 @@ Requirements:
         self.logger.end_turn(error_msg)
         return error_msg
 
+    def rewind(self, n_turns: int = 1) -> dict:
+        """Rewind conversation by removing the last n turns.
+
+        A "turn" starts at a real user message (not a summary injected by
+        summarization, which begins with ``[Assistant Execution Summary]``).
+        Everything from that user message onward (assistant replies, tool
+        results, etc.) is removed.
+
+        Returns a dict with rewind metadata for the caller to display.
+        """
+        # Find real user-message indices (skip system prompt at index 0
+        # and skip summarization-injected messages).
+        user_indices = [
+            i
+            for i, msg in enumerate(self.messages)
+            if msg.role == "user"
+            and i > 0
+            and not (
+                isinstance(msg.content, str)
+                and msg.content.startswith("[Assistant Execution Summary]")
+            )
+        ]
+
+        if not user_indices:
+            return {"error": "no_turns", "remaining_turns": 0}
+
+        if n_turns < 1:
+            return {"error": "invalid_n", "remaining_turns": len(user_indices)}
+
+        if n_turns > len(user_indices):
+            return {
+                "error": "too_many",
+                "available": len(user_indices),
+                "remaining_turns": len(user_indices),
+            }
+
+        # Truncate: keep everything *before* the target user message.
+        cut_index = user_indices[-n_turns]
+        removed_count = len(self.messages) - cut_index
+        from_turn = self.logger.turn
+        remaining_turns = len(user_indices) - n_turns
+
+        self.messages = self.messages[:cut_index]
+
+        # Reset token bookkeeping so the next LLM call refreshes cleanly.
+        self.api_total_tokens = 0
+        self._skip_next_token_check = False
+
+        # Log the rewind event (turn number continues to increment).
+        self.logger.log_rewind(from_turn=from_turn, to_turn=remaining_turns)
+
+        # Build a preview of the last remaining user message (if any).
+        last_user_preview = None
+        remaining_user_indices = [
+            i
+            for i, msg in enumerate(self.messages)
+            if msg.role == "user"
+            and i > 0
+            and not (
+                isinstance(msg.content, str)
+                and msg.content.startswith("[Assistant Execution Summary]")
+            )
+        ]
+        if remaining_user_indices:
+            last_msg = self.messages[remaining_user_indices[-1]]
+            preview = last_msg.content if isinstance(last_msg.content, str) else str(last_msg.content)
+            last_user_preview = preview[:80] + ("..." if len(preview) > 80 else "")
+
+        return {
+            "removed": removed_count,
+            "removed_turns": n_turns,
+            "remaining_turns": remaining_turns,
+            "remaining_messages": len(self.messages),
+            "last_user_preview": last_user_preview,
+        }
+
     def get_history(self) -> list[Message]:
         """Get message history."""
         return self.messages.copy()
