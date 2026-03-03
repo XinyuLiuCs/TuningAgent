@@ -1,14 +1,3 @@
-"""
-Mini Agent - Interactive Runtime Example
-
-Usage:
-    mini-agent [--workspace DIR]
-
-Examples:
-    mini-agent                              # Use current directory as workspace
-    mini-agent --workspace /path/to/dir     # Use specific workspace directory
-"""
-
 import argparse
 import asyncio
 import platform
@@ -599,6 +588,7 @@ async def run_agent(workspace_dir: Path):
         system_prompt=system_prompt,
         tools=tools,
         max_steps=config.agent.max_steps,
+        token_limit=config.agent.token_limit,
         workspace_dir=str(workspace_dir),
     )
 

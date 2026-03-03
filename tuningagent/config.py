@@ -44,6 +44,7 @@ class AgentConfig(BaseModel):
     """Agent configuration"""
 
     max_steps: int = 50
+    token_limit: int = 80000  # Summary triggered when tokens exceed this value
     workspace_dir: str = "./workspace"
     system_prompt_path: str = "system_prompt.md"
 
@@ -188,6 +189,7 @@ class Config(BaseModel):
         # Parse Agent configuration
         agent_config = AgentConfig(
             max_steps=data.get("max_steps", 50),
+            token_limit=data.get("token_limit", 80000),
             workspace_dir=data.get("workspace_dir", "./workspace"),
             system_prompt_path=data.get("system_prompt_path", "system_prompt.md"),
         )
