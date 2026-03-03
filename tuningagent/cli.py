@@ -458,56 +458,60 @@ def add_workspace_tools(tools: List[Tool], config: Config, workspace_dir: Path):
         print(f"{Colors.GREEN}✅ Loaded session note tool{Colors.RESET}")
 
 
-async def run_agent(workspace_dir: Path):
+async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None):
     """Run interactive Agent
 
     Args:
         workspace_dir: Workspace directory path
+        config: Pre-built Config object. If None, loaded from default path.
+        input: prompt_toolkit Input for programmatic driving (e.g. create_pipe_input).
+        output: prompt_toolkit Output for programmatic driving (e.g. DummyOutput).
     """
     session_start = datetime.now()
 
-    # 1. Load configuration from package directory
-    config_path = Config.get_default_config_path()
+    # 1. Load configuration from package directory (skip if already injected)
+    if config is None:
+        config_path = Config.get_default_config_path()
 
-    if not config_path.exists():
-        print(f"{Colors.RED}❌ Configuration file not found{Colors.RESET}")
-        print()
-        print(f"{Colors.BRIGHT_CYAN}📦 Configuration Search Path:{Colors.RESET}")
-        print(f"  {Colors.DIM}1) tuningagent/config/config.yaml{Colors.RESET} (development)")
-        print(f"  {Colors.DIM}2) ~/.mini-agent/config/config.yaml{Colors.RESET} (user)")
-        print(f"  {Colors.DIM}3) <package>/config/config.yaml{Colors.RESET} (installed)")
-        print()
-        print(f"{Colors.BRIGHT_YELLOW}🚀 Quick Setup (Recommended):{Colors.RESET}")
-        print(
-            f"  {Colors.BRIGHT_GREEN}curl -fsSL https://raw.githubusercontent.com/MiniMax-AI/Mini-Agent/main/scripts/setup-config.sh | bash{Colors.RESET}"
-        )
-        print()
-        print(f"{Colors.DIM}  This will automatically:{Colors.RESET}")
-        print(f"{Colors.DIM}    • Create ~/.mini-agent/config/{Colors.RESET}")
-        print(f"{Colors.DIM}    • Download configuration files{Colors.RESET}")
-        print(f"{Colors.DIM}    • Guide you to add your API Key{Colors.RESET}")
-        print()
-        print(f"{Colors.BRIGHT_YELLOW}📝 Manual Setup:{Colors.RESET}")
-        user_config_dir = Path.home() / ".mini-agent" / "config"
-        example_config = Config.get_package_dir() / "config" / "config-example.yaml"
-        print(f"  {Colors.DIM}mkdir -p {user_config_dir}{Colors.RESET}")
-        print(f"  {Colors.DIM}cp {example_config} {user_config_dir}/config.yaml{Colors.RESET}")
-        print(f"  {Colors.DIM}# Then edit {user_config_dir}/config.yaml to add your API Key{Colors.RESET}")
-        print()
-        return
+        if not config_path.exists():
+            print(f"{Colors.RED}❌ Configuration file not found{Colors.RESET}")
+            print()
+            print(f"{Colors.BRIGHT_CYAN}📦 Configuration Search Path:{Colors.RESET}")
+            print(f"  {Colors.DIM}1) tuningagent/config/config.yaml{Colors.RESET} (development)")
+            print(f"  {Colors.DIM}2) ~/.mini-agent/config/config.yaml{Colors.RESET} (user)")
+            print(f"  {Colors.DIM}3) <package>/config/config.yaml{Colors.RESET} (installed)")
+            print()
+            print(f"{Colors.BRIGHT_YELLOW}🚀 Quick Setup (Recommended):{Colors.RESET}")
+            print(
+                f"  {Colors.BRIGHT_GREEN}curl -fsSL https://raw.githubusercontent.com/MiniMax-AI/Mini-Agent/main/scripts/setup-config.sh | bash{Colors.RESET}"
+            )
+            print()
+            print(f"{Colors.DIM}  This will automatically:{Colors.RESET}")
+            print(f"{Colors.DIM}    • Create ~/.mini-agent/config/{Colors.RESET}")
+            print(f"{Colors.DIM}    • Download configuration files{Colors.RESET}")
+            print(f"{Colors.DIM}    • Guide you to add your API Key{Colors.RESET}")
+            print()
+            print(f"{Colors.BRIGHT_YELLOW}📝 Manual Setup:{Colors.RESET}")
+            user_config_dir = Path.home() / ".mini-agent" / "config"
+            example_config = Config.get_package_dir() / "config" / "config-example.yaml"
+            print(f"  {Colors.DIM}mkdir -p {user_config_dir}{Colors.RESET}")
+            print(f"  {Colors.DIM}cp {example_config} {user_config_dir}/config.yaml{Colors.RESET}")
+            print(f"  {Colors.DIM}# Then edit {user_config_dir}/config.yaml to add your API Key{Colors.RESET}")
+            print()
+            return
 
-    try:
-        config = Config.from_yaml(config_path)
-    except FileNotFoundError:
-        print(f"{Colors.RED}❌ Error: Configuration file not found: {config_path}{Colors.RESET}")
-        return
-    except ValueError as e:
-        print(f"{Colors.RED}❌ Error: {e}{Colors.RESET}")
-        print(f"{Colors.YELLOW}Please check the configuration file format{Colors.RESET}")
-        return
-    except Exception as e:
-        print(f"{Colors.RED}❌ Error: Failed to load configuration file: {e}{Colors.RESET}")
-        return
+        try:
+            config = Config.from_yaml(config_path)
+        except FileNotFoundError:
+            print(f"{Colors.RED}❌ Error: Configuration file not found: {config_path}{Colors.RESET}")
+            return
+        except ValueError as e:
+            print(f"{Colors.RED}❌ Error: {e}{Colors.RESET}")
+            print(f"{Colors.YELLOW}Please check the configuration file format{Colors.RESET}")
+            return
+        except Exception as e:
+            print(f"{Colors.RED}❌ Error: Failed to load configuration file: {e}{Colors.RESET}")
+            return
 
     # 2. Initialize Model Pool
     from tuningagent.retry import RetryConfig as RetryConfigBase
@@ -641,13 +645,18 @@ async def run_agent(workspace_dir: Path):
     # Use FileHistory for persistent history across sessions (stored in user's home directory)
     history_file = Path.home() / ".mini-agent" / ".history"
     history_file.parent.mkdir(parents=True, exist_ok=True)
-    session = PromptSession(
+    prompt_kwargs = dict(
         history=FileHistory(str(history_file)),
         auto_suggest=AutoSuggestFromHistory(),
         completer=command_completer,
         style=prompt_style,
         key_bindings=kb,
     )
+    if input is not None:
+        prompt_kwargs["input"] = input
+    if output is not None:
+        prompt_kwargs["output"] = output
+    session = PromptSession(**prompt_kwargs)
 
     # 10. Interactive loop
     while True:
@@ -804,9 +813,11 @@ async def run_agent(workspace_dir: Path):
                 except Exception:
                     pass
 
-            # Start Esc listener thread
-            esc_thread = threading.Thread(target=esc_key_listener, daemon=True)
-            esc_thread.start()
+            # Start Esc listener thread only on real TTY (not programmatic input)
+            esc_thread = None
+            if input is None:
+                esc_thread = threading.Thread(target=esc_key_listener, daemon=True)
+                esc_thread.start()
 
             # Run agent with periodic cancellation check
             try:
@@ -826,7 +837,8 @@ async def run_agent(workspace_dir: Path):
             finally:
                 agent.cancel_event = None
                 esc_listener_stop.set()
-                esc_thread.join(timeout=0.2)
+                if esc_thread is not None:
+                    esc_thread.join(timeout=0.2)
 
             # Visual separation
             print(f"\n{Colors.DIM}{'─' * 60}{Colors.RESET}\n")
