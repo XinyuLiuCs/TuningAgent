@@ -63,7 +63,7 @@ class ToolsConfig(BaseModel):
     # Basic tools (file operations, bash)
     enable_file_tools: bool = True
     enable_bash: bool = True
-    enable_note: bool = True
+    enable_memory: bool = True
 
     # Skills
     enable_skills: bool = True
@@ -208,7 +208,7 @@ class Config(BaseModel):
         tools_config = ToolsConfig(
             enable_file_tools=tools_data.get("enable_file_tools", True),
             enable_bash=tools_data.get("enable_bash", True),
-            enable_note=tools_data.get("enable_note", True),
+            enable_memory=tools_data.get("enable_memory", tools_data.get("enable_note", True)),
             enable_skills=tools_data.get("enable_skills", True),
             skills_dir=tools_data.get("skills_dir", "./skills"),
             enable_mcp=tools_data.get("enable_mcp", True),

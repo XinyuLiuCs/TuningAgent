@@ -68,7 +68,7 @@ tools:
   # Basic tool switches
   enable_file_tools: true  # File read/write/edit tools (ReadTool, WriteTool, EditTool)
   enable_bash: true        # Bash command execution tool
-  enable_note: true        # Session note tool (SessionNoteTool)
+  enable_memory: true      # Project memory tool (AGENT.md)
   
   # Claude Skills
   enable_skills: true      # Enable Skills

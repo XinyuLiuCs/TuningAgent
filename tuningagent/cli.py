@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 import platform
 import subprocess
 import sys
@@ -21,7 +22,7 @@ from tuningagent.llm.model_pool import ModelPool
 from tuningagent.tools.base import Tool
 from tuningagent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
 from tuningagent.tools.file_tools import EditTool, ReadTool, WriteTool
-from tuningagent.tools.note_tool import SessionNoteTool
+from tuningagent.tools.memory_tool import MemoryTool
 from tuningagent.tools.skill_tool import create_skill_tools
 from tuningagent.utils import calculate_display_width
 
@@ -80,7 +81,7 @@ def show_log_directory(open_file_manager: bool = True) -> None:
         print(f"{Colors.RED}Log directory does not exist: {log_dir}{Colors.RESET}\n")
         return
 
-    log_files = list(log_dir.glob("*.log"))
+    log_files = list(log_dir.glob("*.log")) + list(log_dir.glob("*.jsonl"))
 
     if not log_files:
         print(f"{Colors.YELLOW}No log files found in directory.{Colors.RESET}\n")
@@ -204,12 +205,14 @@ def print_help():
 {Colors.BOLD}{Colors.BRIGHT_YELLOW}Available Commands:{Colors.RESET}
   {Colors.BRIGHT_GREEN}/help{Colors.RESET}          - Show this help message
   {Colors.BRIGHT_GREEN}/clear{Colors.RESET}         - Clear session history (keep system prompt)
+  {Colors.BRIGHT_GREEN}/rewind{Colors.RESET}        - Rewind last turn (also: /rewind N)
   {Colors.BRIGHT_GREEN}/history{Colors.RESET}       - Show current session message count
   {Colors.BRIGHT_GREEN}/stats{Colors.RESET}         - Show session statistics
   {Colors.BRIGHT_GREEN}/health{Colors.RESET}        - Check connectivity of all models
   {Colors.BRIGHT_GREEN}/model{Colors.RESET}         - List all models in the pool
   {Colors.BRIGHT_GREEN}/model <alias>{Colors.RESET} - Switch to a different model
   {Colors.BRIGHT_GREEN}/model-stats{Colors.RESET}   - Show per-model execution statistics
+  {Colors.BRIGHT_GREEN}/context{Colors.RESET}        - Show full message context (sent to LLM next turn)
   {Colors.BRIGHT_GREEN}/log{Colors.RESET}           - Show log directory and recent files
   {Colors.BRIGHT_GREEN}/log <file>{Colors.RESET}    - Read a specific log file
   {Colors.BRIGHT_GREEN}/exit{Colors.RESET}          - Exit program (also: exit, quit, q)
@@ -452,10 +455,10 @@ def add_workspace_tools(tools: List[Tool], config: Config, workspace_dir: Path):
         )
         print(f"{Colors.GREEN}✅ Loaded file operation tools (workspace: {workspace_dir}){Colors.RESET}")
 
-    # Session note tool - needs workspace to store memory file
-    if config.tools.enable_note:
-        tools.append(SessionNoteTool(memory_file=str(workspace_dir / ".agent_memory.json")))
-        print(f"{Colors.GREEN}✅ Loaded session note tool{Colors.RESET}")
+    # Project memory tool - needs workspace to store AGENT.md
+    if config.tools.enable_memory:
+        tools.append(MemoryTool(workspace_dir=str(workspace_dir)))
+        print(f"{Colors.GREEN}✅ Loaded memory tool (AGENT.md){Colors.RESET}")
 
 
 async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None):
@@ -572,7 +575,16 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
         system_prompt = "You are TuningAgent, a versatile AI assistant capable of executing complex tasks."
         print(f"{Colors.YELLOW}⚠️  System prompt not found, using default{Colors.RESET}")
 
-    # 6. Inject Skills Metadata into System Prompt (Progressive Disclosure - Level 1)
+    # 6a. Inject AGENT.md into System Prompt
+    agent_memory_path = workspace_dir / "AGENT.md"
+    if agent_memory_path.exists():
+        agent_memory = agent_memory_path.read_text(encoding="utf-8")
+        system_prompt = system_prompt.replace("{AGENT_MEMORY}", agent_memory)
+        print(f"{Colors.GREEN}✅ Loaded project memory from AGENT.md ({len(agent_memory)} chars){Colors.RESET}")
+    else:
+        system_prompt = system_prompt.replace("{AGENT_MEMORY}", "(No project memory yet. Use update_memory to create one.)")
+
+    # 6b. Inject Skills Metadata into System Prompt (Progressive Disclosure - Level 1)
     if skill_loader:
         skills_metadata = skill_loader.get_skills_metadata_prompt()
         if skills_metadata:
@@ -610,7 +622,7 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
     # 9. Setup prompt_toolkit session
     # Command completer
     command_completer = WordCompleter(
-        ["/help", "/clear", "/history", "/stats", "/health", "/model", "/model-stats", "/log", "/exit", "/quit", "/q"],
+        ["/help", "/clear", "/rewind", "/history", "/stats", "/health", "/model", "/model-stats", "/context", "/log", "/exit", "/quit", "/q"],
         ignore_case=True,
         sentence=True,
     )
@@ -695,6 +707,50 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
                     print(f"{Colors.GREEN}✅ Cleared {old_count - 1} messages, starting new session{Colors.RESET}\n")
                     continue
 
+                elif command == "/rewind" or command.startswith("/rewind "):
+                    # Parse N (default 1)
+                    parts = user_input.split(maxsplit=1)
+                    n_turns = 1
+                    if len(parts) > 1:
+                        try:
+                            n_turns = int(parts[1].strip())
+                        except ValueError:
+                            print(f"{Colors.RED}Usage: /rewind [N]  (N must be a positive integer){Colors.RESET}\n")
+                            continue
+
+                    result = agent.rewind(n_turns)
+
+                    if "error" in result:
+                        if result["error"] == "no_turns":
+                            print(f"{Colors.YELLOW}Nothing to rewind — no user turns in history.{Colors.RESET}\n")
+                        elif result["error"] == "invalid_n":
+                            print(f"{Colors.RED}Usage: /rewind [N]  (N must be >= 1){Colors.RESET}\n")
+                        elif result["error"] == "too_many":
+                            print(
+                                f"{Colors.YELLOW}Cannot rewind {n_turns} turn(s) — "
+                                f"only {result['available']} available.{Colors.RESET}\n"
+                            )
+                    else:
+                        print(
+                            f"{Colors.GREEN}Rewound {result['removed_turns']} turn(s) "
+                            f"({result['removed']} messages removed). "
+                            f"{result['remaining_turns']} turn(s) remaining.{Colors.RESET}"
+                        )
+                        if result.get("last_user_preview"):
+                            print(
+                                f"{Colors.DIM}Last user message: {result['last_user_preview']}{Colors.RESET}"
+                            )
+                        # Warn about background processes
+                        from tuningagent.tools.bash_tool import BackgroundShellManager
+                        bg_ids = BackgroundShellManager.get_available_ids()
+                        if bg_ids:
+                            print(
+                                f"{Colors.BRIGHT_YELLOW}Note: {len(bg_ids)} background process(es) "
+                                f"still running (rewind only affects conversation context).{Colors.RESET}"
+                            )
+                        print()
+                    continue
+
                 elif command == "/history":
                     print(f"\n{Colors.BRIGHT_CYAN}Current session message count: {len(agent.messages)}{Colors.RESET}\n")
                     continue
@@ -730,6 +786,14 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
 
                 elif command == "/health":
                     await run_health_check(model_pool)
+                    continue
+
+                elif command == "/context":
+                    context_data = {
+                        "messages": [m.model_dump() for m in agent.messages],
+                        "tools": [t.to_schema() for t in agent.tools.values()],
+                    }
+                    print(json.dumps(context_data, indent=2, ensure_ascii=False))
                     continue
 
                 elif command == "/log" or command.startswith("/log "):

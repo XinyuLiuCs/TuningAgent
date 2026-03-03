@@ -333,8 +333,8 @@ Requirements:
         if cancel_event is not None:
             self.cancel_event = cancel_event
 
-        # Start new run, initialize log file
-        self.logger.start_new_run()
+        # Start new turn (lazily creates log file on first call)
+        self.logger.start_turn()
         print(f"{Colors.DIM}📝 Log file: {self.logger.get_log_file_path()}{Colors.RESET}")
 
         step = 0
@@ -346,6 +346,7 @@ Requirements:
                 self._cleanup_incomplete_messages()
                 cancel_msg = "Task cancelled by user."
                 print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {cancel_msg}{Colors.RESET}")
+                self.logger.end_turn(cancel_msg)
                 return cancel_msg
 
             step_start_time = perf_counter()
@@ -361,6 +362,9 @@ Requirements:
             print(f"\n{Colors.DIM}╭{'─' * BOX_WIDTH}╮{Colors.RESET}")
             print(f"{Colors.DIM}│{Colors.RESET} {step_text}{' ' * padding}{Colors.DIM}│{Colors.RESET}")
             print(f"{Colors.DIM}╰{'─' * BOX_WIDTH}╯{Colors.RESET}")
+
+            # Track step in logger (1-based)
+            self.logger.start_step(step + 1)
 
             # Get tool list for LLM call
             tool_list = list(self.tools.values())
@@ -380,6 +384,7 @@ Requirements:
                 else:
                     error_msg = f"LLM call failed: {str(e)}"
                     print(f"\n{Colors.BRIGHT_RED}❌ Error:{Colors.RESET} {error_msg}")
+                self.logger.end_turn(error_msg)
                 return error_msg
 
             # Accumulate API reported token usage
@@ -418,6 +423,7 @@ Requirements:
                 step_elapsed = perf_counter() - step_start_time
                 total_elapsed = perf_counter() - run_start_time
                 print(f"\n{Colors.DIM}⏱️  Step {step + 1} completed in {step_elapsed:.2f}s (total: {total_elapsed:.2f}s){Colors.RESET}")
+                self.logger.end_turn(response.content)
                 return response.content
 
             # Check for cancellation before executing tools
@@ -425,6 +431,7 @@ Requirements:
                 self._cleanup_incomplete_messages()
                 cancel_msg = "Task cancelled by user."
                 print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {cancel_msg}{Colors.RESET}")
+                self.logger.end_turn(cancel_msg)
                 return cancel_msg
 
             # Execute tool calls
@@ -505,6 +512,7 @@ Requirements:
                     self._cleanup_incomplete_messages()
                     cancel_msg = "Task cancelled by user."
                     print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {cancel_msg}{Colors.RESET}")
+                    self.logger.end_turn(cancel_msg)
                     return cancel_msg
 
             step_elapsed = perf_counter() - step_start_time
@@ -516,7 +524,84 @@ Requirements:
         # Max steps reached
         error_msg = f"Task couldn't be completed after {self.max_steps} steps."
         print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {error_msg}{Colors.RESET}")
+        self.logger.end_turn(error_msg)
         return error_msg
+
+    def rewind(self, n_turns: int = 1) -> dict:
+        """Rewind conversation by removing the last n turns.
+
+        A "turn" starts at a real user message (not a summary injected by
+        summarization, which begins with ``[Assistant Execution Summary]``).
+        Everything from that user message onward (assistant replies, tool
+        results, etc.) is removed.
+
+        Returns a dict with rewind metadata for the caller to display.
+        """
+        # Find real user-message indices (skip system prompt at index 0
+        # and skip summarization-injected messages).
+        user_indices = [
+            i
+            for i, msg in enumerate(self.messages)
+            if msg.role == "user"
+            and i > 0
+            and not (
+                isinstance(msg.content, str)
+                and msg.content.startswith("[Assistant Execution Summary]")
+            )
+        ]
+
+        if not user_indices:
+            return {"error": "no_turns", "remaining_turns": 0}
+
+        if n_turns < 1:
+            return {"error": "invalid_n", "remaining_turns": len(user_indices)}
+
+        if n_turns > len(user_indices):
+            return {
+                "error": "too_many",
+                "available": len(user_indices),
+                "remaining_turns": len(user_indices),
+            }
+
+        # Truncate: keep everything *before* the target user message.
+        cut_index = user_indices[-n_turns]
+        removed_count = len(self.messages) - cut_index
+        from_turn = self.logger.turn
+        remaining_turns = len(user_indices) - n_turns
+
+        self.messages = self.messages[:cut_index]
+
+        # Reset token bookkeeping so the next LLM call refreshes cleanly.
+        self.api_total_tokens = 0
+        self._skip_next_token_check = False
+
+        # Log the rewind event (turn number continues to increment).
+        self.logger.log_rewind(from_turn=from_turn, to_turn=remaining_turns)
+
+        # Build a preview of the last remaining user message (if any).
+        last_user_preview = None
+        remaining_user_indices = [
+            i
+            for i, msg in enumerate(self.messages)
+            if msg.role == "user"
+            and i > 0
+            and not (
+                isinstance(msg.content, str)
+                and msg.content.startswith("[Assistant Execution Summary]")
+            )
+        ]
+        if remaining_user_indices:
+            last_msg = self.messages[remaining_user_indices[-1]]
+            preview = last_msg.content if isinstance(last_msg.content, str) else str(last_msg.content)
+            last_user_preview = preview[:80] + ("..." if len(preview) > 80 else "")
+
+        return {
+            "removed": removed_count,
+            "removed_turns": n_turns,
+            "remaining_turns": remaining_turns,
+            "remaining_messages": len(self.messages),
+            "last_user_preview": last_user_preview,
+        }
 
     def get_history(self) -> list[Message]:
         """Get message history."""
