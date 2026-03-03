@@ -31,6 +31,15 @@ pytest tests/test_agent.py::test_function_name -v
 
 Tests use `pytest-asyncio` with `asyncio_mode = "auto"` (configured in pyproject.toml), so async test functions work without the `@pytest.mark.asyncio` decorator.
 
+```bash
+# Run E2E tests (requires valid API keys in config.yaml)
+pytest tests/test_cli_e2e.py -v
+
+# Run only E2E / only unit tests
+pytest -m e2e -v
+pytest -m "not e2e"
+```
+
 ## Configuration
 
 Copy `tuningagent/config/config-example.yaml` to `tuningagent/config/config.yaml` and fill in API keys. Config is loaded from three locations in priority order:
@@ -77,6 +86,19 @@ Pydantic v2 models: `Message` (role + content blocks), `LLMResponse`, `ToolCall`
 ### Logging (`tuningagent/logger.py`)
 
 Execution logs are written to `~/.mini-agent/log/` as JSON. Records LLM requests, responses, and tool call results.
+
+### E2E Test Infrastructure (`tests/test_cli_e2e.py`)
+
+Programmatic CLI driving via `run_agent(workspace, config=..., input=..., output=...)`:
+- `config`: Pre-built `Config` object (skips file loading when injected)
+- `input`: `prompt_toolkit.input.create_pipe_input()` for sending user messages
+- `output`: `prompt_toolkit.output.DummyOutput()` to suppress terminal rendering
+- Esc listener is disabled when `input` is not None (non-TTY mode)
+
+**Gotchas:**
+- Pipe input must use `\r` (carriage return) to submit, not `\n`. The `c-j` key binding in `cli.py` intercepts `\n` (Ctrl+J = LF) and inserts a literal newline instead of submitting.
+- `BashTool` does not `cwd` into workspace — bash test prompts must use absolute paths (`cd {tmp_path} && ...`).
+- Set `config.agent.max_steps` to a small value (e.g. 5) to keep E2E tests fast.
 
 ## Key Design Patterns
 
