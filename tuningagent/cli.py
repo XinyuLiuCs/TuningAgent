@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 import platform
 import subprocess
 import sys
@@ -210,6 +211,7 @@ def print_help():
   {Colors.BRIGHT_GREEN}/model{Colors.RESET}         - List all models in the pool
   {Colors.BRIGHT_GREEN}/model <alias>{Colors.RESET} - Switch to a different model
   {Colors.BRIGHT_GREEN}/model-stats{Colors.RESET}   - Show per-model execution statistics
+  {Colors.BRIGHT_GREEN}/context{Colors.RESET}        - Show full message context (sent to LLM next turn)
   {Colors.BRIGHT_GREEN}/log{Colors.RESET}           - Show log directory and recent files
   {Colors.BRIGHT_GREEN}/log <file>{Colors.RESET}    - Read a specific log file
   {Colors.BRIGHT_GREEN}/exit{Colors.RESET}          - Exit program (also: exit, quit, q)
@@ -606,7 +608,7 @@ async def run_agent(workspace_dir: Path):
     # 9. Setup prompt_toolkit session
     # Command completer
     command_completer = WordCompleter(
-        ["/help", "/clear", "/history", "/stats", "/health", "/model", "/model-stats", "/log", "/exit", "/quit", "/q"],
+        ["/help", "/clear", "/history", "/stats", "/health", "/model", "/model-stats", "/context", "/log", "/exit", "/quit", "/q"],
         ignore_case=True,
         sentence=True,
     )
@@ -721,6 +723,11 @@ async def run_agent(workspace_dir: Path):
 
                 elif command == "/health":
                     await run_health_check(model_pool)
+                    continue
+
+                elif command == "/context":
+                    context_data = [m.model_dump() for m in agent.messages]
+                    print(json.dumps(context_data, indent=2, ensure_ascii=False))
                     continue
 
                 elif command == "/log" or command.startswith("/log "):
