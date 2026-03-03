@@ -3,7 +3,7 @@
 from .base import Tool, ToolResult
 from .bash_tool import BashTool
 from .file_tools import EditTool, ReadTool, WriteTool
-from .note_tool import RecallNoteTool, SessionNoteTool
+from .memory_tool import MemoryTool
 
 __all__ = [
     "Tool",
@@ -12,6 +12,5 @@ __all__ = [
     "WriteTool",
     "EditTool",
     "BashTool",
-    "SessionNoteTool",
-    "RecallNoteTool",
+    "MemoryTool",
 ]

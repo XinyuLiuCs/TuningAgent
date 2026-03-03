@@ -2,52 +2,32 @@
 
 > 可评估/调试的通用 Coding Agent 框架
 
-基于 [Mini-Agent](https://github.com/MiniMax-AI/Mini-Agent) 开发的 Agent 评估框架，专注于模型、上下文和工具的系统化评估。
+基于 [Mini-Agent](https://github.com/MiniMax-AI/Mini-Agent) 开发的 Agent 评估系统，专注于模型、上下文和工具的系统化评估。
 
 ## 项目定位
 
 TuningAgent 是一个用于学习研究的 **最小可行的** Agent 评估框架，用于：
-- 对比不同 LLM 模型在实际任务中的表现
-- 追踪和回溯 Agent 的执行过程
-- 评估工具和 Skills 的有效性
+- 对比不同 LLM 模型在实际任务中的表现；
+- 追踪和回溯 Agent 的执行过程；
+- 评估工具和 Skills 的有效性；
 
 
 ## 核心能力
 
 ### 1. 模型评估
-
-**当前支持：**
-- ✅ 配置文件切换不同 LLM（Anthropic/OpenAI/AWS Bedrock）
-- ✅ 基础的多模型客户端
-- ✅ 模型池管理（单配置文件支持多模型，运行时切换）
-- ✅ 按模型记录执行统计（token、延迟、错误）
-- ✅ 健康检查（启动时与初始化并行探测 API 连通性，`/health` 按需触发）
-
-**规划中：**
-- [ ] 并行调用多模型对比结果
+- 配置文件切换不同 LLM（Anthropic/OpenAI/AWS Bedrock）
+- 模型池管理（单配置文件支持多模型，运行时热切换）
+- 按模型记录执行统计（token、延迟、错误）
+- 健康检查（启动时并行探测 API 连通性，`/health` 按需触发）
 
 ### 2. 上下文追踪
+- 结构化 JSONL 日志（Session/Turn/Step 层级，完整记录消息、工具调用及结果）
+- 对话回退（`/rewind`，turn 级截断后可换模型/改措辞重试）
+- 上下文调试（`/context` 导出完整消息上下文，`/log` 查看日志文件）
 
-**当前支持：**
-- ✅ 基础执行日志
-
-**规划中：**
-- [ ] 完整保存执行轨迹（消息历史、工具调用、结果）
-- [ ] 从任意步骤重新执行
-- [ ] 上下文调试，系统上下文集中到一个文件，进行版本管理
-- [ ] 简单的执行可视化（步骤、token、工具调用）
-- [ ] 失败案例自动归档
-
-### 3. 工具评估
-
-**当前支持：**
-- ✅ 5个基础工具（文件读写、Bash、笔记）
-- ✅ 15+ Claude Skills
-
-**规划中：**
-- [ ] 工具单元测试框架
-- [ ] 调用统计（次数、成功率、耗时）
-- [ ] Skills 性能基准
+### 3. 工具与 Skills
+- 5 个基础工具（文件读写、Bash、项目记忆）
+- 15+ Claude Skills
 
 ## 评估方法论
 
@@ -92,16 +72,6 @@ vim tuningagent/config/config.yaml
 - MiniMax API（MiniMax 模型）
 - AWS Bedrock（Claude 模型，通过 AWS 凭证认证，无需 API Key）
 
-#### 单模型配置（默认）
-
-直接在顶层填写 API 信息即可：
-
-```yaml
-api_key: "sk-your-key"
-api_base: "https://api.minimax.io"
-model: "MiniMax-M2.1"
-provider: "anthropic"
-```
 
 #### 多模型配置（模型池）
 
@@ -127,8 +97,8 @@ models:
   bedrock-claude:
     provider: "bedrock"
     model: "us.anthropic.claude-opus-4-6-v1"
-    aws_region: "us-east-1"      # 可选，默认读取 AWS 环境配置
-    aws_profile: ""              # 可选，默认读取 AWS 环境配置
+    aws_region: "us-east-1"
+    aws_profile: ""
 default_model: "bedrock-claude"
 ```
 
@@ -145,6 +115,26 @@ default_model: "bedrock-claude"
 | `/model <alias>` | 切换到指定别名的模型（如 `/model claude-sonnet`） |
 | `/model-stats` | 显示各模型的执行统计（调用次数、token 用量、平均延迟、错误数） |
 | `/health` | 检查所有模型的 API 连通性（启动时也会自动执行） |
+| `/rewind [N]` | 回退 N 个对话 turn（默认 1，详见下方） |
+
+#### 对话回退（`/rewind`）
+
+当 Agent 回答不满意或方向走错时，用 `/rewind` 回退到之前的 turn 重新对话：
+
+```
+/rewind        回退 1 个 turn
+/rewind 3      回退 3 个 turn
+```
+
+**截断示例：**
+
+```
+初始:      system → user1 → asst1 → tool1 → user2 → asst2 → user3 → asst3
+/rewind 1: system → user1 → asst1 → tool1 → user2 → asst2
+/rewind 2: system → user1 → asst1 → tool1
+```
+
+**设计要点：** rewind 只截断对话上下文，不自动重新执行。这让用户可以在重试前自由调整——换模型（`/model`）、改措辞、或换一个完全不同的问题。工具的副作用（文件修改、bash 执行）不可逆，rewind 时会提示仍在运行的后台进程。
 
 ### 运行
 
@@ -172,7 +162,7 @@ TuningAgent/
 │   ├── tools/                # 工具实现
 │   │   ├── bash_tool.py
 │   │   ├── file_tools.py
-│   │   ├── note_tool.py
+│   │   ├── memory_tool.py
 │   │   └── skill_tool.py
 │   ├── skills/               # Claude Skills（15+）
 │   ├── schema/               # 数据结构定义
@@ -185,21 +175,24 @@ TuningAgent/
 
 ## 开发计划
 
-### Phase 1: 模型池管理（MVP）
+### Phase 1: 模型池管理 ✅
 - [x] 支持单配置文件定义多个模型
 - [x] 通过 `/model` 命令快速切换模型
 - [x] 记录每个模型的执行结果（`/model-stats`）
 - [x] API 健康检查（启动并行探测 + `/health` 按需检查）
+- [ ] 并行调用多模型对比结果
 
-### Phase 2: 执行追踪
-- [ ] 序列化保存完整对话历史
-- [ ] 工具调用的输入输出记录
-- [ ] 基础的步骤可视化
+### Phase 2: 执行追踪 ✅
+- [x] 结构化 JSONL 日志（session/turn/step 层级）
+- [x] 工具调用的输入输出记录
+- [x] `/context` 上下文导出、`/rewind` 对话回退
+- [ ] 简单的执行可视化（步骤、token、工具调用）
+- [ ] 失败案例自动归档
 
 ### Phase 3: 工具评估
-- [ ] 工具调用统计
+- [ ] 工具调用统计（次数、成功率、耗时）
 - [ ] 失败案例收集
-- [ ] Skills 单元测试
+- [ ] Skills 单元测试与性能基准
 
 ### Phase 4: 评估流程
 - [ ] 定义评估任务集
@@ -217,15 +210,14 @@ TuningAgent/
 
 - 仅支持单 Agent（无多 Agent 协作）
 - 需要手动配置 API Key
-- 执行追踪功能待完善
 - 无 Web UI（仅 CLI）
 
 ## 贡献
 
-欢迎提交 Issue 和 Pull Request。重点关注：
-- 模型评估功能的完善
-- 执行追踪的实现
-- 工具测试框架的建立
+欢迎提交 Issue 和 Pull Request。当前重点关注：
+- 执行可视化与失败案例归档（Phase 2 剩余）
+- 工具评估框架（Phase 3）
+- 评估流程自动化（Phase 4）
 
 ## License
 
