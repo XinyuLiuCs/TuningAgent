@@ -27,8 +27,8 @@ A **minimal viable** agent evaluation framework for research and learning:
 - Context debugging (`/context` exports messages + tool schemas, `/log` browses log files)
 
 ### 3. Tools & Skills
-- 5 built-in tools (file read/write/edit, bash, project memory)
-- 15+ Claude Skills
+- 7 built-in tools (bash + background process management, file read/write/edit, project memory)
+- 10 Claude Skills (hot-reload via `/reload`)
 
 ## Quick Start
 
@@ -95,13 +95,19 @@ default_model: "bedrock-claude"
 
 | Command | Description |
 |---------|-------------|
+| `/help` | Show available commands |
+| `/clear` | Clear session history (keep system prompt) |
+| `/history` | Show current session message count |
+| `/stats` | Show session statistics |
 | `/model` | List all models, mark the active one |
 | `/model <alias>` | Switch to a model (e.g. `/model claude-sonnet`) |
 | `/model-stats` | Per-model stats (calls, tokens, latency, errors) |
 | `/health` | Check API connectivity for all models |
 | `/rewind [N]` | Roll back N conversation turns (default 1) |
 | `/context` | Export full message history and tool schemas |
+| `/reload` | Hot-reload skills from disk (SKILL.md changes) |
 | `/log` | Browse log files |
+| `/exit` | Exit program (also: `/quit`, `/q`) |
 
 #### Conversation Rewind (`/rewind`)
 
@@ -149,7 +155,7 @@ TuningAgent/
 │   │   ├── file_tools.py
 │   │   ├── memory_tool.py
 │   │   └── skill_tool.py
-│   ├── skills/               # Claude Skills (15+)
+│   ├── skills/               # Claude Skills (10)
 │   ├── schema/               # Data models
 │   ├── config/               # Configuration files
 │   └── cli.py                # CLI entry point
@@ -188,7 +194,7 @@ TuningAgent/
 - **Python** 3.10+
 - **LLM clients**: Anthropic, OpenAI, AWS Bedrock
 - **Core libs**: Pydantic, HTTPX, PyYAML
-- **Skills**: 15+ Claude Skills
+- **Skills**: 10 Claude Skills
 
 ## Limitations
 

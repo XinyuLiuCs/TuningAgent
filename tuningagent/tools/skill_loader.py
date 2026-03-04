@@ -234,6 +234,19 @@ class SkillLoader:
         """
         return list(self.loaded_skills.keys())
 
+    def reload_skills(self) -> dict:
+        """Reload all skills from disk. Returns change summary."""
+        old_names = set(self.loaded_skills.keys())
+        self.loaded_skills.clear()
+        self.discover_skills()
+        new_names = set(self.loaded_skills.keys())
+        return {
+            "added": sorted(new_names - old_names),
+            "removed": sorted(old_names - new_names),
+            "retained": sorted(old_names & new_names),
+            "total": len(new_names),
+        }
+
     def get_skills_metadata_prompt(self) -> str:
         """
         Generate prompt containing ONLY metadata (name + description) for all skills.
