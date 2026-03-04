@@ -18,6 +18,7 @@ from prompt_toolkit.styles import Style
 
 from tuningagent.agent import Agent
 from tuningagent.config import Config
+from tuningagent.schema import Message
 from tuningagent.llm.model_pool import ModelPool
 from tuningagent.tools.base import Tool
 from tuningagent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
@@ -215,6 +216,7 @@ def print_help():
   {Colors.BRIGHT_GREEN}/context{Colors.RESET}        - Show full message context (sent to LLM next turn)
   {Colors.BRIGHT_GREEN}/log{Colors.RESET}           - Show log directory and recent files
   {Colors.BRIGHT_GREEN}/log <file>{Colors.RESET}    - Read a specific log file
+  {Colors.BRIGHT_GREEN}/reload{Colors.RESET}        - Reload skills from disk (hot-reload SKILL.md changes)
   {Colors.BRIGHT_GREEN}/exit{Colors.RESET}          - Exit program (also: exit, quit, q)
 
 {Colors.BOLD}{Colors.BRIGHT_YELLOW}Keyboard Shortcuts:{Colors.RESET}
@@ -622,7 +624,7 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
     # 9. Setup prompt_toolkit session
     # Command completer
     command_completer = WordCompleter(
-        ["/help", "/clear", "/rewind", "/history", "/stats", "/health", "/model", "/model-stats", "/context", "/log", "/exit", "/quit", "/q"],
+        ["/help", "/clear", "/rewind", "/history", "/stats", "/health", "/model", "/model-stats", "/context", "/log", "/reload", "/exit", "/quit", "/q"],
         ignore_case=True,
         sentence=True,
     )
@@ -806,6 +808,31 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
                         # /log <filename> - read specific log file
                         filename = parts[1].strip("\"'")
                         read_log_file(filename)
+                    continue
+
+                elif command == "/reload":
+                    if not skill_loader:
+                        print(f"{Colors.YELLOW}⚠️  Skills not enabled{Colors.RESET}\n")
+                        continue
+                    result = skill_loader.reload_skills()
+                    # Refresh Level 1 metadata in system prompt
+                    new_metadata = skill_loader.get_skills_metadata_prompt()
+                    sys_content = agent.messages[0].content
+                    import re as _re
+                    new_sys = _re.sub(
+                        r"## Available Skills\n.*?(?=\n## Working Guidelines)",
+                        new_metadata if new_metadata else "",
+                        sys_content,
+                        flags=_re.DOTALL,
+                    )
+                    agent.messages[0] = Message(role="system", content=new_sys)
+                    # Print summary
+                    print(f"{Colors.GREEN}✅ Skills reloaded: {result['total']} total{Colors.RESET}")
+                    if result["added"]:
+                        print(f"  + {', '.join(result['added'])}")
+                    if result["removed"]:
+                        print(f"  - {', '.join(result['removed'])}")
+                    print()
                     continue
 
                 else:

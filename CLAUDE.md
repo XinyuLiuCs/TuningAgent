@@ -72,12 +72,12 @@ Token management is handled inline: tiktoken estimates token counts, and when li
 ### Tool System (`tuningagent/tools/`)
 
 - `Tool` base class (in `base.py`) defines the interface: `name`, `description`, `parameters` dict, and async `execute()` method returning `ToolResult`
-- Concrete tools: `BashTool` (shell exec with background process tracking), `ReadTool`/`WriteTool`/`EditTool` (file ops with token-aware truncation), `SessionNoteTool` (in-memory scratch notes), `SkillTool` (wraps loaded skills)
+- Concrete tools: `BashTool` (shell exec with background process tracking), `BashOutputTool`/`BashKillTool` (background process management), `ReadTool`/`WriteTool`/`EditTool` (file ops with token-aware truncation), `MemoryTool` (project memory via AGENT.md), `SkillTool` (wraps loaded skills)
 - Tools are registered by name in `Agent.__init__` and their schemas are passed to the LLM
 
 ### Skills (`tuningagent/skills/`)
 
-15 Claude Skills loaded from `SKILL.md` files with YAML frontmatter. `SkillLoader` (in `tools/skill_loader.py`) discovers and parses them. Skills use progressive disclosure — metadata is loaded eagerly, full content on demand. Each skill becomes a `SkillTool` instance registered alongside regular tools.
+10 Claude Skills loaded from `SKILL.md` files with YAML frontmatter. `SkillLoader` (in `tools/skill_loader.py`) discovers and parses them. Skills use progressive disclosure — metadata is loaded eagerly, full content on demand. Each skill becomes a `SkillTool` instance registered alongside regular tools. Skills can be hot-reloaded at runtime via the `/reload` CLI command, which calls `SkillLoader.reload_skills()` and refreshes the system prompt metadata.
 
 ### Data Models (`tuningagent/schema/`)
 

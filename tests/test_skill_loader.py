@@ -246,6 +246,93 @@ Run the script: python scripts/test_script.py
         assert str(skill_dir / "scripts" / "test_script.py") in skill.content
 
 
+def test_reload_skills_no_changes():
+    """Test reload with no changes returns correct summary"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for i in range(2):
+            skill_dir = Path(tmpdir) / f"skill-{i}"
+            skill_dir.mkdir()
+            create_test_skill(skill_dir, f"skill-{i}", f"Skill {i}", f"Content {i}")
+
+        loader = SkillLoader(tmpdir)
+        loader.discover_skills()
+        assert len(loader.loaded_skills) == 2
+
+        result = loader.reload_skills()
+        assert result["added"] == []
+        assert result["removed"] == []
+        assert sorted(result["retained"]) == ["skill-0", "skill-1"]
+        assert result["total"] == 2
+
+
+def test_reload_skills_detects_new_skill():
+    """Test reload detects a newly added skill on disk"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "existing"
+        skill_dir.mkdir()
+        create_test_skill(skill_dir, "existing", "Existing skill", "Content")
+
+        loader = SkillLoader(tmpdir)
+        loader.discover_skills()
+        assert loader.list_skills() == ["existing"]
+
+        # Add a new skill on disk
+        new_dir = Path(tmpdir) / "brand-new"
+        new_dir.mkdir()
+        create_test_skill(new_dir, "brand-new", "New skill", "New content")
+
+        result = loader.reload_skills()
+        assert result["added"] == ["brand-new"]
+        assert result["removed"] == []
+        assert "existing" in result["retained"]
+        assert result["total"] == 2
+        assert loader.get_skill("brand-new") is not None
+
+
+def test_reload_skills_detects_removed_skill():
+    """Test reload detects a skill removed from disk"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for name in ("keep", "remove-me"):
+            d = Path(tmpdir) / name
+            d.mkdir()
+            create_test_skill(d, name, f"{name} skill", "Content")
+
+        loader = SkillLoader(tmpdir)
+        loader.discover_skills()
+        assert len(loader.loaded_skills) == 2
+
+        # Delete one skill from disk
+        import shutil
+        shutil.rmtree(Path(tmpdir) / "remove-me")
+
+        result = loader.reload_skills()
+        assert result["removed"] == ["remove-me"]
+        assert result["retained"] == ["keep"]
+        assert result["total"] == 1
+        assert loader.get_skill("remove-me") is None
+
+
+def test_reload_skills_refreshes_content():
+    """Test reload picks up modified SKILL.md content"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        skill_dir = Path(tmpdir) / "mutable"
+        skill_dir.mkdir()
+        create_test_skill(skill_dir, "mutable", "Mutable skill", "Original content")
+
+        loader = SkillLoader(tmpdir)
+        loader.discover_skills()
+        assert "Original content" in loader.get_skill("mutable").content
+
+        # Overwrite SKILL.md with new content
+        create_test_skill(skill_dir, "mutable", "Mutable skill", "Updated content v2")
+
+        result = loader.reload_skills()
+        assert result["retained"] == ["mutable"]
+        assert result["total"] == 1
+        assert "Updated content v2" in loader.get_skill("mutable").content
+        assert "Original content" not in loader.get_skill("mutable").content
+
+
 def test_skill_to_prompt_includes_root_directory():
     """Test that to_prompt includes skill root directory path"""
     with tempfile.TemporaryDirectory() as tmpdir:
