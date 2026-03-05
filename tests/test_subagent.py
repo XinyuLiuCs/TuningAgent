@@ -322,7 +322,76 @@ class TestRunSubagentTool:
             assert not result.success
             assert "timed out" in result.error
 
+    async def test_foreground_timeout_does_not_kill_parent(self):
+        """When a foreground subagent times out, the parent cancel_event must NOT be set."""
+        parent_cancel = asyncio.Event()
+
+        async def slow_run(*args, **kwargs):
+            await asyncio.sleep(10)
+            return "never"
+
+        with patch("tuningagent.tools.subagent_tool._run_subagent", side_effect=slow_run):
+            from tuningagent.tools.subagent_tool import _execute_foreground
+
+            result = await _execute_foreground(
+                llm_client=AsyncMock(),
+                system_prompt="x",
+                all_tools=[],
+                task="slow task",
+                max_steps=5,
+                token_limit=1000,
+                workspace_dir="./workspace",
+                allowed_tools=None,
+                cancel_event=parent_cancel,
+                timeout=1,
+                label="slow",
+            )
+            assert not result.success
+            assert "timed out" in result.error
+            # Critical: parent cancel_event must remain unset
+            assert not parent_cancel.is_set()
+
+    async def test_parent_cancel_propagates_to_foreground_child(self):
+        """When the parent cancel_event is set (user Esc), the foreground child should be cancelled."""
+        parent_cancel = asyncio.Event()
+        captured_child_cancel = {}
+
+        async def blocking_run(*args, **kwargs):
+            cancel = kwargs.get("cancel_event")
+            captured_child_cancel["event"] = cancel
+            # Block until cancelled
+            await asyncio.sleep(30)
+            return "never"
+
+        with patch("tuningagent.tools.subagent_tool._run_subagent", side_effect=blocking_run):
+            from tuningagent.tools.subagent_tool import _execute_foreground
+
+            async def set_parent_cancel():
+                await asyncio.sleep(0.1)
+                parent_cancel.set()
+
+            asyncio.create_task(set_parent_cancel())
+
+            with pytest.raises(asyncio.CancelledError):
+                await _execute_foreground(
+                    llm_client=AsyncMock(),
+                    system_prompt="x",
+                    all_tools=[],
+                    task="blocking task",
+                    max_steps=5,
+                    token_limit=1000,
+                    workspace_dir="./workspace",
+                    allowed_tools=None,
+                    cancel_event=parent_cancel,
+                    timeout=30,
+                    label="blocking",
+                )
+
+            # The child's isolated cancel_event should have been set (propagated from parent)
+            assert captured_child_cancel["event"].is_set()
+
     async def test_cancel_event_transparent(self):
+        """Parent cancel_event is passed to _execute_foreground for propagation."""
         loader = self._make_loader_with_config(
             name="x", description="x", system_prompt="x"
         )

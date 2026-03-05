@@ -217,7 +217,16 @@ async def _execute_foreground(
     timeout: int,
     label: str,
 ) -> ToolResult:
-    """Run subagent in foreground with cooperative timeout and cancel_event."""
+    """Run subagent in foreground with cooperative timeout and cancel_event.
+
+    The child gets its own fg_cancel_event (mirrors bg_cancel_event in
+    _execute_background) so that a timeout-triggered cancellation does NOT
+    propagate to the parent agent.  Parent→child propagation (user Esc) is
+    handled via an asyncio.wait listener on the parent's cancel_event.
+    """
+    # Foreground child gets its own cancel_event — mirrors bg_cancel_event
+    fg_cancel_event = asyncio.Event()
+
     child_task = asyncio.create_task(
         _run_subagent(
             llm_client=llm_client,
@@ -228,16 +237,37 @@ async def _execute_foreground(
             token_limit=token_limit,
             workspace_dir=workspace_dir,
             allowed_tools=allowed_tools,
-            cancel_event=cancel_event,
+            cancel_event=fg_cancel_event,
         )
     )
+
+    # Build waiter set: child + optional parent-cancel listener
+    waiters = {child_task}
+    parent_cancel_task = None
+    if cancel_event is not None:
+        parent_cancel_task = asyncio.create_task(cancel_event.wait())
+        waiters.add(parent_cancel_task)
+
     try:
-        done, _ = await asyncio.wait({child_task}, timeout=timeout)
+        done, _ = await asyncio.wait(
+            waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+        )
+
         if child_task in done:
+            if parent_cancel_task:
+                parent_cancel_task.cancel()
             return ToolResult(success=True, content=child_task.result())
-        # Timeout: signal cooperative cancellation first
-        if cancel_event is not None:
-            cancel_event.set()
+
+        if parent_cancel_task and parent_cancel_task in done:
+            # Parent cancelled (user Esc) → propagate to child, then re-raise
+            fg_cancel_event.set()
+            child_task.cancel()
+            raise asyncio.CancelledError()
+
+        # Timeout → signal child's cancel (NOT parent's)
+        if parent_cancel_task:
+            parent_cancel_task.cancel()
+        fg_cancel_event.set()
         # Grace period for clean shutdown
         try:
             await asyncio.wait_for(asyncio.shield(child_task), timeout=5)
