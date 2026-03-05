@@ -29,7 +29,7 @@ class SubagentConfig:
 class SubagentLoader:
     """Discovers and loads fixed subagent definitions from SUBAGENT.yaml files."""
 
-    def __init__(self, subagents_dir: str = "./subagents"):
+    def __init__(self, subagents_dir: str = "subagents"):
         self.subagents_dir = Path(subagents_dir)
         self.loaded: Dict[str, SubagentConfig] = {}
 

@@ -608,7 +608,7 @@ class TestBackgroundWrapper:
         assert output_path.exists()
         content = output_path.read_text()
         assert "crash-test" in content
-        assert "ended without writing result" in content
+        assert "boom" in content
 
     async def test_no_fallback_if_file_exists(self, tmp_path):
         """If subagent wrote output, framework should not overwrite it."""

@@ -216,7 +216,7 @@ class Config(BaseModel):
             enable_skills=tools_data.get("enable_skills", True),
             skills_dir=tools_data.get("skills_dir", "./skills"),
             enable_subagents=tools_data.get("enable_subagents", True),
-            subagents_dir=tools_data.get("subagents_dir", "./subagents"),
+            subagents_dir=tools_data.get("subagents_dir", "subagents"),
             enable_mcp=tools_data.get("enable_mcp", True),
             mcp_config_path=tools_data.get("mcp_config_path", "mcp.json"),
             mcp=mcp_config,

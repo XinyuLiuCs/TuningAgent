@@ -179,15 +179,21 @@ async def _background_wrapper(
         )
     except asyncio.CancelledError:
         pass
-    except Exception:
-        pass
+    except Exception as e:
+        # Write error to output file so main agent can discover the failure
+        if not output_path.exists():
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(
+                f"## Error\n\n"
+                f"Subagent {subagent_id} failed with error:\n\n```\n{e}\n```\n"
+            )
     finally:
-        # Fallback: if subagent didn't write the output file, write an error
+        # Fallback: if subagent didn't write the output file, write a notice
         if not output_path.exists():
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(
                 f"Subagent {subagent_id} ended without writing result.\n"
-                "This may indicate a crash, cancellation, or the subagent "
+                "This may indicate cancellation or the subagent "
                 "forgot to use write_file."
             )
         SubagentManager.cleanup(subagent_id)
@@ -214,7 +220,8 @@ def _prepare_background_subagent(
     output_instruction = (
         f"\n\n## Output\n"
         f"You are running as a background subagent. You MUST write your complete "
-        f"final result to: .subagent/{subagent_id}.md using write_file before finishing."
+        f"final result to: .subagent/{subagent_id}.md using write_file before finishing.\n"
+        f"This is the ONLY file you are allowed to write — all other read-only constraints still apply."
     )
     augmented_prompt = config_or_prompt + output_instruction
 
@@ -295,28 +302,40 @@ class FixedSubagentTool(Tool):
     async def _execute_foreground(
         self, task: str, cancel_event: Optional[asyncio.Event], timeout: int
     ) -> ToolResult:
-        """Run subagent in foreground with timeout and cancel_event."""
+        """Run subagent in foreground with cooperative timeout and cancel_event."""
+        child_task = asyncio.create_task(
+            _run_subagent(
+                llm_client=self._llm_client,
+                system_prompt=self.config.system_prompt,
+                tools=self._all_tools,
+                task=task,
+                max_steps=self.config.max_steps,
+                token_limit=self.config.token_limit,
+                workspace_dir=self._workspace_dir,
+                allowed_tools=self.config.allowed_tools,
+                cancel_event=cancel_event,
+            )
+        )
         try:
-            result = await asyncio.wait_for(
-                _run_subagent(
-                    llm_client=self._llm_client,
-                    system_prompt=self.config.system_prompt,
-                    tools=self._all_tools,
-                    task=task,
-                    max_steps=self.config.max_steps,
-                    token_limit=self.config.token_limit,
-                    workspace_dir=self._workspace_dir,
-                    allowed_tools=self.config.allowed_tools,
-                    cancel_event=cancel_event,
-                ),
-                timeout=timeout,
-            )
-            return ToolResult(success=True, content=result)
-        except asyncio.TimeoutError:
-            return ToolResult(
-                success=False,
-                error=f"Subagent '{self.config.name}' timed out after {timeout}s",
-            )
+            done, _ = await asyncio.wait({child_task}, timeout=timeout)
+            if child_task in done:
+                return ToolResult(success=True, content=child_task.result())
+            # Timeout: signal cooperative cancellation first
+            if cancel_event is not None:
+                cancel_event.set()
+            # Grace period for clean shutdown
+            try:
+                await asyncio.wait_for(asyncio.shield(child_task), timeout=5)
+                return ToolResult(success=True, content=child_task.result())
+            except asyncio.TimeoutError:
+                child_task.cancel()
+                return ToolResult(
+                    success=False,
+                    error=f"Subagent '{self.config.name}' timed out after {timeout}s",
+                )
+        except asyncio.CancelledError:
+            child_task.cancel()
+            raise
         except Exception as e:
             return ToolResult(success=False, error=f"Subagent execution failed: {e}")
 
@@ -480,27 +499,39 @@ class CreateSubagentTool(Tool):
         cancel_event: Optional[asyncio.Event],
         timeout: int,
     ) -> ToolResult:
+        child_task = asyncio.create_task(
+            _run_subagent(
+                llm_client=self._llm_client,
+                system_prompt=system_prompt,
+                tools=self._all_tools,
+                task=task,
+                max_steps=self._default_max_steps,
+                token_limit=self._default_token_limit,
+                workspace_dir=self._workspace_dir,
+                allowed_tools=allowed_tools,
+                cancel_event=cancel_event,
+            )
+        )
         try:
-            result = await asyncio.wait_for(
-                _run_subagent(
-                    llm_client=self._llm_client,
-                    system_prompt=system_prompt,
-                    tools=self._all_tools,
-                    task=task,
-                    max_steps=self._default_max_steps,
-                    token_limit=self._default_token_limit,
-                    workspace_dir=self._workspace_dir,
-                    allowed_tools=allowed_tools,
-                    cancel_event=cancel_event,
-                ),
-                timeout=timeout,
-            )
-            return ToolResult(success=True, content=result)
-        except asyncio.TimeoutError:
-            return ToolResult(
-                success=False,
-                error=f"Dynamic subagent timed out after {timeout}s",
-            )
+            done, _ = await asyncio.wait({child_task}, timeout=timeout)
+            if child_task in done:
+                return ToolResult(success=True, content=child_task.result())
+            # Timeout: signal cooperative cancellation first
+            if cancel_event is not None:
+                cancel_event.set()
+            # Grace period for clean shutdown
+            try:
+                await asyncio.wait_for(asyncio.shield(child_task), timeout=5)
+                return ToolResult(success=True, content=child_task.result())
+            except asyncio.TimeoutError:
+                child_task.cancel()
+                return ToolResult(
+                    success=False,
+                    error=f"Dynamic subagent timed out after {timeout}s",
+                )
+        except asyncio.CancelledError:
+            child_task.cancel()
+            raise
         except Exception as e:
             return ToolResult(success=False, error=f"Subagent execution failed: {e}")
 
@@ -601,7 +632,7 @@ class SubagentCancelTool(Tool):
 
 
 def create_subagent_tools(
-    subagents_dir: str = "./subagents",
+    subagents_dir: str = "subagents",
 ) -> tuple[List[Tool], Optional[SubagentLoader]]:
     """Discover fixed subagents and create all subagent tools.
 
