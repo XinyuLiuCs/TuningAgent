@@ -2,6 +2,7 @@ name: code-explorer
 description: Explores project structure and code in read-only mode. Use for codebase analysis, architecture review, and finding files/patterns.
 max_steps: 100
 token_limit: 400000
+run_in_background: true
 allowed_tools:
   - read_file
   - bash

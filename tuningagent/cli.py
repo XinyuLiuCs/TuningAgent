@@ -25,7 +25,7 @@ from tuningagent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
 from tuningagent.tools.file_tools import EditTool, ReadTool, WriteTool
 from tuningagent.tools.memory_tool import MemoryTool
 from tuningagent.tools.skill_tool import create_skill_tools
-from tuningagent.tools.subagent_tool import create_subagent_tools, FixedSubagentTool
+from tuningagent.tools.subagent_tool import create_subagent_tools, FixedSubagentTool, SubagentManager
 from tuningagent.utils import calculate_display_width
 
 
@@ -640,7 +640,8 @@ async def run_agent(workspace_dir: Path):
     # 7b. Inject runtime context into subagent tools (they need llm_client + full tool list)
     if subagent_tools:
         for t in subagent_tools:
-            t.set_context(model_pool, tools, workspace_dir=str(workspace_dir))
+            if hasattr(t, "set_context"):
+                t.set_context(model_pool, tools, workspace_dir=str(workspace_dir), parent_agent=agent)
 
     # 8. Display welcome information
     print_banner()
@@ -900,6 +901,7 @@ async def run_agent(workspace_dir: Path):
                                     print(f"\n{Colors.BRIGHT_YELLOW}⏹️  Esc pressed, cancelling...{Colors.RESET}")
                                     esc_cancelled[0] = True
                                     cancel_event.set()
+                                    SubagentManager.cancel_all()
                                     break
                             esc_listener_stop.wait(0.05)
                     except Exception:
@@ -925,6 +927,7 @@ async def run_agent(workspace_dir: Path):
                                     print(f"\n{Colors.BRIGHT_YELLOW}⏹️  Esc pressed, cancelling...{Colors.RESET}")
                                     esc_cancelled[0] = True
                                     cancel_event.set()
+                                    SubagentManager.cancel_all()
                                     break
                     finally:
                         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
