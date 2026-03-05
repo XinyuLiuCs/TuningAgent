@@ -12,7 +12,7 @@ from tuningagent.tools.base import Tool, ToolResult
 from tuningagent.tools.subagent_loader import SubagentConfig, SubagentLoader
 from tuningagent.tools.subagent_tool import (
     CreateSubagentTool,
-    FixedSubagentTool,
+    RunSubagentTool,
     SubagentCancelTool,
     SubagentManager,
     _is_subagent_tool,
@@ -183,6 +183,31 @@ class TestSubagentLoader:
         assert "a2" in result["added"]
         assert result["total"] == 2
 
+    def test_get_subagents_metadata_prompt_empty(self, tmp_path):
+        loader = SubagentLoader(str(tmp_path))
+        assert loader.get_subagents_metadata_prompt() == ""
+
+    def test_get_subagents_metadata_prompt(self, tmp_path):
+        sub = tmp_path / "agent1"
+        sub.mkdir()
+        (sub / "SUBAGENT.yaml").write_text(
+            "name: explorer\ndescription: Explores code\nsystem_prompt: x\n"
+        )
+        sub2 = tmp_path / "agent2"
+        sub2.mkdir()
+        (sub2 / "SUBAGENT.yaml").write_text(
+            "name: bg-worker\ndescription: Background work\nsystem_prompt: x\nrun_in_background: true\n"
+        )
+
+        loader = SubagentLoader(str(tmp_path))
+        loader.discover()
+        prompt = loader.get_subagents_metadata_prompt()
+
+        assert "## Available Subagents" in prompt
+        assert "`explorer`" in prompt
+        assert "`bg-worker` [background]" in prompt
+        assert "run_subagent(name, task)" in prompt
+
 
 # ---------------------------------------------------------------------------
 # Tool classification tests
@@ -191,12 +216,12 @@ class TestSubagentLoader:
 
 class TestSubagentToolClassification:
     def test_is_subagent_tool(self):
-        config = SubagentConfig(name="x", description="x", system_prompt="x")
-        fixed = FixedSubagentTool(config)
+        loader = SubagentLoader("/nonexistent")
+        run = RunSubagentTool(loader)
         dynamic = CreateSubagentTool()
         cancel = SubagentCancelTool()
 
-        assert _is_subagent_tool(fixed) is True
+        assert _is_subagent_tool(run) is True
         assert _is_subagent_tool(dynamic) is True
         assert _is_subagent_tool(cancel) is True
 
@@ -205,64 +230,103 @@ class TestSubagentToolClassification:
 
 
 # ---------------------------------------------------------------------------
-# FixedSubagentTool tests
+# RunSubagentTool tests
 # ---------------------------------------------------------------------------
 
 
-class TestFixedSubagentTool:
-    def test_name_and_description(self):
-        config = SubagentConfig(
-            name="reviewer", description="Reviews code", system_prompt="You review."
-        )
-        tool = FixedSubagentTool(config)
-        assert tool.name == "subagent_reviewer"
-        assert "Reviews code" in tool.description
+class TestRunSubagentTool:
+    def _make_loader_with_config(self, **kwargs):
+        loader = SubagentLoader("/nonexistent")
+        config = SubagentConfig(**kwargs)
+        loader.loaded[config.name] = config
+        return loader
 
-    def test_background_description(self):
-        config = SubagentConfig(
-            name="bg", description="Background work", system_prompt="x",
-            run_in_background=True,
-        )
-        tool = FixedSubagentTool(config)
-        assert "[background]" in tool.description
-
-    def test_parameters_schema(self):
-        config = SubagentConfig(name="x", description="x", system_prompt="x")
-        tool = FixedSubagentTool(config)
+    def test_name_and_parameters(self):
+        loader = SubagentLoader("/nonexistent")
+        tool = RunSubagentTool(loader)
+        assert tool.name == "run_subagent"
         params = tool.parameters
+        assert "name" in params["properties"]
         assert "task" in params["properties"]
-        assert params["required"] == ["task"]
+        assert params["required"] == ["name", "task"]
 
     async def test_execute_without_context(self):
-        config = SubagentConfig(name="x", description="x", system_prompt="x")
-        tool = FixedSubagentTool(config)
-        result = await tool.execute(task="do something")
+        loader = SubagentLoader("/nonexistent")
+        tool = RunSubagentTool(loader)
+        result = await tool.execute(name="x", task="do something")
         assert not result.success
         assert "not initialized" in result.error
 
+    async def test_unknown_name_lists_available(self):
+        loader = self._make_loader_with_config(
+            name="explorer", description="Explores code", system_prompt="x"
+        )
+        tool = RunSubagentTool(loader)
+        tool._llm_client = AsyncMock()
+        tool._all_tools = []
+
+        result = await tool.execute(name="nonexistent", task="do something")
+        assert not result.success
+        assert "nonexistent" in result.error
+        assert "explorer" in result.error
+
+    async def test_foreground_execution(self):
+        loader = self._make_loader_with_config(
+            name="reviewer", description="Reviews code", system_prompt="You review."
+        )
+        tool = RunSubagentTool(loader)
+        tool._llm_client = AsyncMock()
+        tool._all_tools = []
+
+        with patch("tuningagent.tools.subagent_tool._execute_foreground", new_callable=AsyncMock) as mock_fg:
+            mock_fg.return_value = ToolResult(success=True, content="reviewed")
+            result = await tool.execute(name="reviewer", task="review this code")
+            assert result.success
+            assert result.content == "reviewed"
+            # Verify correct config values passed
+            call_kwargs = mock_fg.call_args.kwargs
+            assert call_kwargs["system_prompt"] == "You review."
+            assert call_kwargs["label"] == "reviewer"
+
+    async def test_background_execution(self, tmp_path):
+        loader = self._make_loader_with_config(
+            name="bg-worker",
+            description="Background work",
+            system_prompt="Work in bg.",
+            run_in_background=True,
+        )
+        tool = RunSubagentTool(loader)
+        tool._llm_client = AsyncMock()
+        tool._all_tools = []
+        tool._workspace_dir = str(tmp_path)
+
+        with patch("tuningagent.tools.subagent_tool._execute_background", new_callable=AsyncMock) as mock_bg:
+            mock_bg.return_value = ToolResult(success=True, content="bg started")
+            result = await tool.execute(name="bg-worker", task="do background work")
+            assert result.success
+
     async def test_foreground_timeout(self):
-        """Foreground subagent should return timeout error when exceeding timeout."""
-        config = SubagentConfig(
+        loader = self._make_loader_with_config(
             name="slow", description="Slow", system_prompt="x", timeout=1
         )
-        tool = FixedSubagentTool(config)
+        tool = RunSubagentTool(loader)
+        tool._llm_client = AsyncMock()
+        tool._all_tools = []
 
         async def slow_run(*args, **kwargs):
             await asyncio.sleep(10)
             return "never"
 
-        tool._llm_client = AsyncMock()
-        tool._all_tools = []
-
         with patch("tuningagent.tools.subagent_tool._run_subagent", side_effect=slow_run):
-            result = await tool.execute(task="do something slow")
+            result = await tool.execute(name="slow", task="do something slow")
             assert not result.success
             assert "timed out" in result.error
 
-    async def test_foreground_cancel_event_transparent(self):
-        """Foreground subagent should pass parent's cancel_event to child."""
-        config = SubagentConfig(name="x", description="x", system_prompt="x")
-        tool = FixedSubagentTool(config)
+    async def test_cancel_event_transparent(self):
+        loader = self._make_loader_with_config(
+            name="x", description="x", system_prompt="x"
+        )
+        tool = RunSubagentTool(loader)
 
         mock_parent = AsyncMock()
         parent_cancel = asyncio.Event()
@@ -272,11 +336,10 @@ class TestFixedSubagentTool:
         tool._all_tools = []
         tool._parent_agent = mock_parent
 
-        with patch("tuningagent.tools.subagent_tool._run_subagent", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = "result"
-            await tool.execute(task="do something")
-            # Verify cancel_event was passed through
-            call_kwargs = mock_run.call_args.kwargs
+        with patch("tuningagent.tools.subagent_tool._execute_foreground", new_callable=AsyncMock) as mock_fg:
+            mock_fg.return_value = ToolResult(success=True, content="result")
+            await tool.execute(name="x", task="do something")
+            call_kwargs = mock_fg.call_args.kwargs
             assert call_kwargs["cancel_event"] is parent_cancel
 
 
@@ -325,7 +388,6 @@ class TestCreateSubagentTool:
         tool._workspace_dir = str(tmp_path)
 
         with patch("tuningagent.tools.subagent_tool._background_wrapper", new_callable=AsyncMock) as mock_bg:
-            # Make it a coroutine that does nothing (the task wrapper handles it)
             mock_bg.return_value = None
             result = await tool.execute(
                 task="x", system_prompt="y", run_in_background=True
@@ -343,12 +405,12 @@ class TestCreateSubagentTool:
 class TestRunSubagent:
     async def test_filters_subagent_tools(self):
         """Child agent should not receive any subagent tools."""
-        config = SubagentConfig(name="x", description="x", system_prompt="x")
-        fixed = FixedSubagentTool(config)
+        loader = SubagentLoader("/nonexistent")
+        run = RunSubagentTool(loader)
         dynamic = CreateSubagentTool()
         cancel = SubagentCancelTool()
         dummy = DummyTool()
-        all_tools = [fixed, dynamic, cancel, dummy]
+        all_tools = [run, dynamic, cancel, dummy]
 
         mock_llm = _make_mock_llm()
 
@@ -650,50 +712,20 @@ class TestBackgroundWrapper:
 
 
 # ---------------------------------------------------------------------------
-# Fixed background subagent integration test
-# ---------------------------------------------------------------------------
-
-
-class TestFixedBackgroundSubagent:
-    def setup_method(self):
-        SubagentManager._tasks.clear()
-        SubagentManager._cancel_events.clear()
-
-    async def test_background_fixed_returns_immediately(self, tmp_path):
-        """Fixed subagent with run_in_background=True should return immediately."""
-        config = SubagentConfig(
-            name="bg-worker",
-            description="Background worker",
-            system_prompt="Work in bg.",
-            run_in_background=True,
-        )
-        tool = FixedSubagentTool(config)
-        tool._llm_client = AsyncMock()
-        tool._all_tools = []
-        tool._workspace_dir = str(tmp_path)
-
-        with patch("tuningagent.tools.subagent_tool._background_wrapper", new_callable=AsyncMock) as mock_bg:
-            mock_bg.return_value = None
-            result = await tool.execute(task="do background work")
-
-        assert result.success
-        assert "subagent_id" in result.content
-        assert "bg-worker-" in result.content
-        assert ".subagent/" in result.content
-
-
-# ---------------------------------------------------------------------------
 # create_subagent_tools factory tests
 # ---------------------------------------------------------------------------
 
 
 class TestCreateSubagentToolsFactory:
-    def test_always_includes_dynamic_and_cancel_tools(self, tmp_path):
+    def test_always_returns_three_tools(self, tmp_path):
+        """Factory should always return exactly 3 tools: run_subagent, create_subagent, subagent_cancel."""
         tools, loader = create_subagent_tools(str(tmp_path))
+        assert len(tools) == 3
+        assert any(isinstance(t, RunSubagentTool) for t in tools)
         assert any(isinstance(t, CreateSubagentTool) for t in tools)
         assert any(isinstance(t, SubagentCancelTool) for t in tools)
 
-    def test_loads_fixed_subagents(self, tmp_path):
+    def test_loader_discovers_configs(self, tmp_path):
         sub = tmp_path / "my-agent"
         sub.mkdir()
         (sub / "SUBAGENT.yaml").write_text(
@@ -701,6 +733,5 @@ class TestCreateSubagentToolsFactory:
         )
 
         tools, loader = create_subagent_tools(str(tmp_path))
-        fixed = [t for t in tools if isinstance(t, FixedSubagentTool)]
-        assert len(fixed) == 1
-        assert fixed[0].name == "subagent_my-agent"
+        assert len(tools) == 3  # always 3 gateway tools
+        assert "my-agent" in loader.loaded

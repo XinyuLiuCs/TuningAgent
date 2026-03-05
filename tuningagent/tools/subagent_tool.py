@@ -2,7 +2,7 @@
 Subagent Tools - Allow the main agent to delegate tasks to child agents.
 
 Supports two modes:
-- FixedSubagentTool: pre-defined subagent from SUBAGENT.yaml
+- RunSubagentTool: gateway tool that dispatches to pre-defined subagents by name
 - CreateSubagentTool: dynamic subagent created at runtime by the LLM
 
 Execution modes:
@@ -22,7 +22,7 @@ from .base import Tool, ToolResult
 from .subagent_loader import SubagentConfig, SubagentLoader
 
 # Sentinel names used to filter subagent tools from child agents
-SUBAGENT_TOOL_PREFIX = "subagent_"
+RUN_SUBAGENT_TOOL_NAME = "run_subagent"
 CREATE_SUBAGENT_TOOL_NAME = "create_subagent"
 SUBAGENT_CANCEL_TOOL_NAME = "subagent_cancel"
 
@@ -32,7 +32,7 @@ DEFAULT_TIMEOUT = 300
 
 def _is_subagent_tool(tool: Tool) -> bool:
     """Check if a tool is a subagent tool (should be excluded from child agents)."""
-    return isinstance(tool, (FixedSubagentTool, CreateSubagentTool, SubagentCancelTool))
+    return isinstance(tool, (RunSubagentTool, CreateSubagentTool, SubagentCancelTool))
 
 
 # ---------------------------------------------------------------------------
@@ -199,16 +199,80 @@ async def _background_wrapper(
         SubagentManager.cleanup(subagent_id)
 
 
-def _prepare_background_subagent(
-    config_or_prompt: str,
+# ---------------------------------------------------------------------------
+# Foreground/background execution helpers (shared by RunSubagentTool and CreateSubagentTool)
+# ---------------------------------------------------------------------------
+
+
+async def _execute_foreground(
+    llm_client,
+    system_prompt: str,
+    all_tools: List[Tool],
+    task: str,
+    max_steps: int,
+    token_limit: int,
+    workspace_dir: str,
+    allowed_tools: Optional[List[str]],
+    cancel_event: Optional[asyncio.Event],
+    timeout: int,
+    label: str,
+) -> ToolResult:
+    """Run subagent in foreground with cooperative timeout and cancel_event."""
+    child_task = asyncio.create_task(
+        _run_subagent(
+            llm_client=llm_client,
+            system_prompt=system_prompt,
+            tools=all_tools,
+            task=task,
+            max_steps=max_steps,
+            token_limit=token_limit,
+            workspace_dir=workspace_dir,
+            allowed_tools=allowed_tools,
+            cancel_event=cancel_event,
+        )
+    )
+    try:
+        done, _ = await asyncio.wait({child_task}, timeout=timeout)
+        if child_task in done:
+            return ToolResult(success=True, content=child_task.result())
+        # Timeout: signal cooperative cancellation first
+        if cancel_event is not None:
+            cancel_event.set()
+        # Grace period for clean shutdown
+        try:
+            await asyncio.wait_for(asyncio.shield(child_task), timeout=5)
+            return ToolResult(success=True, content=child_task.result())
+        except asyncio.TimeoutError:
+            child_task.cancel()
+            return ToolResult(
+                success=False,
+                error=f"Subagent '{label}' timed out after {timeout}s",
+            )
+    except asyncio.CancelledError:
+        child_task.cancel()
+        raise
+    except Exception as e:
+        return ToolResult(success=False, error=f"Subagent execution failed: {e}")
+
+
+async def _execute_background(
+    llm_client,
+    system_prompt: str,
+    all_tools: List[Tool],
+    task: str,
+    max_steps: int,
+    token_limit: int,
+    workspace_dir: str,
     allowed_tools: Optional[List[str]],
     subagent_id: str,
-) -> tuple[str, Optional[List[str]]]:
-    """Augment system prompt and allowed_tools for background mode.
+) -> ToolResult:
+    """Start subagent in background, return immediately."""
+    workspace = Path(workspace_dir)
+    output_dir = workspace / ".subagent"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{subagent_id}.md"
 
-    Returns (augmented_system_prompt, augmented_allowed_tools).
-    """
-    # Ensure write_file is in allowed_tools
+    # Augment prompt and tools for background mode
     if allowed_tools is not None:
         augmented_tools = list(allowed_tools)
         if "write_file" not in augmented_tools:
@@ -216,35 +280,60 @@ def _prepare_background_subagent(
     else:
         augmented_tools = allowed_tools
 
-    # Inject output instruction into system prompt
-    output_instruction = (
-        f"\n\n## Output\n"
+    augmented_prompt = (
+        system_prompt
+        + f"\n\n## Output\n"
         f"You are running as a background subagent. You MUST write your complete "
         f"final result to: .subagent/{subagent_id}.md using write_file before finishing.\n"
         f"This is the ONLY file you are allowed to write — all other read-only constraints still apply."
     )
-    augmented_prompt = config_or_prompt + output_instruction
 
-    return augmented_prompt, augmented_tools
+    # Each background subagent gets its own cancel_event
+    bg_cancel_event = asyncio.Event()
+
+    coro = _background_wrapper(
+        subagent_id=subagent_id,
+        output_path=output_path,
+        cancel_event=bg_cancel_event,
+        llm_client=llm_client,
+        system_prompt=augmented_prompt,
+        tools=all_tools,
+        task=task,
+        max_steps=max_steps,
+        token_limit=token_limit,
+        workspace_dir=workspace_dir,
+        allowed_tools=augmented_tools,
+    )
+
+    SubagentManager.start(subagent_id, coro, bg_cancel_event)
+
+    return ToolResult(
+        success=True,
+        content=(
+            f"Background subagent started.\n"
+            f"  subagent_id: {subagent_id}\n"
+            f"  output: .subagent/{subagent_id}.md\n"
+            f"Use read_file to check the result. "
+            f"File absent = still running. File present = done."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
-# FixedSubagentTool
+# RunSubagentTool (gateway for fixed subagents)
 # ---------------------------------------------------------------------------
 
 
-class FixedSubagentTool(Tool):
-    """A tool that delegates a task to a pre-defined subagent."""
+class RunSubagentTool(Tool):
+    """Gateway tool that dispatches to pre-defined subagents by name.
 
-    def __init__(
-        self,
-        config: SubagentConfig,
-        llm_client=None,
-        all_tools: Optional[List[Tool]] = None,
-    ):
-        self.config = config
-        self._llm_client = llm_client
-        self._all_tools: List[Tool] = all_tools or []
+    Analogous to GetSkillTool: holds a loader reference, looks up config by name.
+    """
+
+    def __init__(self, loader: SubagentLoader):
+        self._loader = loader
+        self._llm_client = None
+        self._all_tools: List[Tool] = []
         self._workspace_dir: str = "./workspace"
         self._parent_agent = None
 
@@ -263,126 +352,76 @@ class FixedSubagentTool(Tool):
 
     @property
     def name(self) -> str:
-        return f"{SUBAGENT_TOOL_PREFIX}{self.config.name}"
+        return RUN_SUBAGENT_TOOL_NAME
 
     @property
     def description(self) -> str:
-        mode = " [background]" if self.config.run_in_background else ""
-        return f"[Subagent{mode}] {self.config.description}"
+        return (
+            "[Subagent] Run a pre-defined subagent by name. "
+            "See system prompt for available subagents and their descriptions."
+        )
 
     @property
     def parameters(self) -> Dict[str, Any]:
         return {
             "type": "object",
             "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name of the subagent to run (see Available Subagents in system prompt).",
+                },
                 "task": {
                     "type": "string",
                     "description": "The task to delegate to this subagent. Be specific and provide all necessary context.",
-                }
+                },
             },
-            "required": ["task"],
+            "required": ["name", "task"],
         }
 
-    async def execute(self, task: str) -> ToolResult:
+    async def execute(self, name: str, task: str) -> ToolResult:
         if not self._llm_client:
             return ToolResult(success=False, error="Subagent not initialized (missing llm_client)")
+
+        config = self._loader.loaded.get(name)
+        if config is None:
+            available = ", ".join(self._loader.loaded.keys()) or "(none)"
+            return ToolResult(
+                success=False,
+                error=f"Subagent '{name}' not found. Available subagents: {available}",
+            )
 
         # Resolve cancel_event from parent agent
         cancel_event = None
         if self._parent_agent is not None:
             cancel_event = getattr(self._parent_agent, "cancel_event", None)
 
-        timeout = self.config.timeout
-
-        if self.config.run_in_background:
-            return await self._execute_background(task)
-        else:
-            return await self._execute_foreground(task, cancel_event, timeout)
-
-    async def _execute_foreground(
-        self, task: str, cancel_event: Optional[asyncio.Event], timeout: int
-    ) -> ToolResult:
-        """Run subagent in foreground with cooperative timeout and cancel_event."""
-        child_task = asyncio.create_task(
-            _run_subagent(
+        if config.run_in_background:
+            subagent_id = f"{config.name}-{uuid.uuid4().hex[:8]}"
+            return await _execute_background(
                 llm_client=self._llm_client,
-                system_prompt=self.config.system_prompt,
-                tools=self._all_tools,
+                system_prompt=config.system_prompt,
+                all_tools=self._all_tools,
                 task=task,
-                max_steps=self.config.max_steps,
-                token_limit=self.config.token_limit,
+                max_steps=config.max_steps,
+                token_limit=config.token_limit,
                 workspace_dir=self._workspace_dir,
-                allowed_tools=self.config.allowed_tools,
-                cancel_event=cancel_event,
+                allowed_tools=config.allowed_tools,
+                subagent_id=subagent_id,
             )
-        )
-        try:
-            done, _ = await asyncio.wait({child_task}, timeout=timeout)
-            if child_task in done:
-                return ToolResult(success=True, content=child_task.result())
-            # Timeout: signal cooperative cancellation first
-            if cancel_event is not None:
-                cancel_event.set()
-            # Grace period for clean shutdown
-            try:
-                await asyncio.wait_for(asyncio.shield(child_task), timeout=5)
-                return ToolResult(success=True, content=child_task.result())
-            except asyncio.TimeoutError:
-                child_task.cancel()
-                return ToolResult(
-                    success=False,
-                    error=f"Subagent '{self.config.name}' timed out after {timeout}s",
-                )
-        except asyncio.CancelledError:
-            child_task.cancel()
-            raise
-        except Exception as e:
-            return ToolResult(success=False, error=f"Subagent execution failed: {e}")
-
-    async def _execute_background(self, task: str) -> ToolResult:
-        """Start subagent in background, return immediately."""
-        subagent_id = f"{self.config.name}-{uuid.uuid4().hex[:8]}"
-        workspace = Path(self._workspace_dir)
-        output_dir = workspace / ".subagent"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{subagent_id}.md"
-
-        # Augment prompt and tools for background mode
-        augmented_prompt, augmented_tools = _prepare_background_subagent(
-            self.config.system_prompt,
-            self.config.allowed_tools,
-            subagent_id,
-        )
-
-        # Each background subagent gets its own cancel_event
-        bg_cancel_event = asyncio.Event()
-
-        coro = _background_wrapper(
-            subagent_id=subagent_id,
-            output_path=output_path,
-            cancel_event=bg_cancel_event,
-            llm_client=self._llm_client,
-            system_prompt=augmented_prompt,
-            tools=self._all_tools,
-            task=task,
-            max_steps=self.config.max_steps,
-            token_limit=self.config.token_limit,
-            workspace_dir=self._workspace_dir,
-            allowed_tools=augmented_tools,
-        )
-
-        SubagentManager.start(subagent_id, coro, bg_cancel_event)
-
-        return ToolResult(
-            success=True,
-            content=(
-                f"Background subagent started.\n"
-                f"  subagent_id: {subagent_id}\n"
-                f"  output: .subagent/{subagent_id}.md\n"
-                f"Use read_file to check the result. "
-                f"File absent = still running. File present = done."
-            ),
-        )
+        else:
+            return await _execute_foreground(
+                llm_client=self._llm_client,
+                system_prompt=config.system_prompt,
+                all_tools=self._all_tools,
+                task=task,
+                max_steps=config.max_steps,
+                token_limit=config.token_limit,
+                workspace_dir=self._workspace_dir,
+                allowed_tools=config.allowed_tools,
+                cancel_event=cancel_event,
+                timeout=config.timeout,
+                label=config.name,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -485,100 +524,32 @@ class CreateSubagentTool(Tool):
         effective_timeout = timeout if timeout is not None else self._default_timeout
 
         if run_in_background:
-            return await self._execute_background(task, system_prompt, allowed_tools)
-        else:
-            return await self._execute_foreground(
-                task, system_prompt, allowed_tools, cancel_event, effective_timeout
-            )
-
-    async def _execute_foreground(
-        self,
-        task: str,
-        system_prompt: str,
-        allowed_tools: Optional[List[str]],
-        cancel_event: Optional[asyncio.Event],
-        timeout: int,
-    ) -> ToolResult:
-        child_task = asyncio.create_task(
-            _run_subagent(
+            subagent_id = f"dynamic-{uuid.uuid4().hex[:8]}"
+            return await _execute_background(
                 llm_client=self._llm_client,
                 system_prompt=system_prompt,
-                tools=self._all_tools,
+                all_tools=self._all_tools,
+                task=task,
+                max_steps=self._default_max_steps,
+                token_limit=self._default_token_limit,
+                workspace_dir=self._workspace_dir,
+                allowed_tools=allowed_tools,
+                subagent_id=subagent_id,
+            )
+        else:
+            return await _execute_foreground(
+                llm_client=self._llm_client,
+                system_prompt=system_prompt,
+                all_tools=self._all_tools,
                 task=task,
                 max_steps=self._default_max_steps,
                 token_limit=self._default_token_limit,
                 workspace_dir=self._workspace_dir,
                 allowed_tools=allowed_tools,
                 cancel_event=cancel_event,
+                timeout=effective_timeout,
+                label="dynamic",
             )
-        )
-        try:
-            done, _ = await asyncio.wait({child_task}, timeout=timeout)
-            if child_task in done:
-                return ToolResult(success=True, content=child_task.result())
-            # Timeout: signal cooperative cancellation first
-            if cancel_event is not None:
-                cancel_event.set()
-            # Grace period for clean shutdown
-            try:
-                await asyncio.wait_for(asyncio.shield(child_task), timeout=5)
-                return ToolResult(success=True, content=child_task.result())
-            except asyncio.TimeoutError:
-                child_task.cancel()
-                return ToolResult(
-                    success=False,
-                    error=f"Dynamic subagent timed out after {timeout}s",
-                )
-        except asyncio.CancelledError:
-            child_task.cancel()
-            raise
-        except Exception as e:
-            return ToolResult(success=False, error=f"Subagent execution failed: {e}")
-
-    async def _execute_background(
-        self,
-        task: str,
-        system_prompt: str,
-        allowed_tools: Optional[List[str]],
-    ) -> ToolResult:
-        subagent_id = f"dynamic-{uuid.uuid4().hex[:8]}"
-        workspace = Path(self._workspace_dir)
-        output_dir = workspace / ".subagent"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{subagent_id}.md"
-
-        augmented_prompt, augmented_tools = _prepare_background_subagent(
-            system_prompt, allowed_tools, subagent_id
-        )
-
-        bg_cancel_event = asyncio.Event()
-
-        coro = _background_wrapper(
-            subagent_id=subagent_id,
-            output_path=output_path,
-            cancel_event=bg_cancel_event,
-            llm_client=self._llm_client,
-            system_prompt=augmented_prompt,
-            tools=self._all_tools,
-            task=task,
-            max_steps=self._default_max_steps,
-            token_limit=self._default_token_limit,
-            workspace_dir=self._workspace_dir,
-            allowed_tools=augmented_tools,
-        )
-
-        SubagentManager.start(subagent_id, coro, bg_cancel_event)
-
-        return ToolResult(
-            success=True,
-            content=(
-                f"Background subagent started.\n"
-                f"  subagent_id: {subagent_id}\n"
-                f"  output: .subagent/{subagent_id}.md\n"
-                f"Use read_file to check the result. "
-                f"File absent = still running. File present = done."
-            ),
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -641,13 +612,12 @@ def create_subagent_tools(
         The tools need set_context() called before use.
     """
     loader = SubagentLoader(subagents_dir)
-    configs = loader.discover()
+    loader.discover()
 
     tools: List[Tool] = []
 
-    # Fixed subagent tools
-    for config in configs:
-        tools.append(FixedSubagentTool(config))
+    # Gateway tool for fixed subagents
+    tools.append(RunSubagentTool(loader))
 
     # Dynamic subagent tool (always available)
     tools.append(CreateSubagentTool())
