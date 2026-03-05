@@ -25,6 +25,7 @@ from tuningagent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
 from tuningagent.tools.file_tools import EditTool, ReadTool, WriteTool
 from tuningagent.tools.memory_tool import MemoryTool
 from tuningagent.tools.skill_tool import create_skill_tools
+from tuningagent.tools.subagent_tool import create_subagent_tools, FixedSubagentTool
 from tuningagent.utils import calculate_display_width
 
 
@@ -374,11 +375,13 @@ async def initialize_base_tools(config: Config):
         config: Configuration object
 
     Returns:
-        Tuple of (list of tools, skill loader if skills enabled)
+        Tuple of (list of tools, skill loader if skills enabled, subagent tools, subagent loader)
     """
 
     tools = []
     skill_loader = None
+    subagent_tools = []
+    subagent_loader = None
 
     # 1. Bash tool and Bash Output tool
     if config.tools.enable_bash:
@@ -429,8 +432,36 @@ async def initialize_base_tools(config: Config):
         except Exception as e:
             print(f"{Colors.YELLOW}⚠️  Failed to load Skills: {e}{Colors.RESET}")
 
+    # 4. Subagents
+    if config.tools.enable_subagents:
+        print(f"{Colors.BRIGHT_CYAN}Loading Subagents...{Colors.RESET}")
+        try:
+            # Use the same config priority search as system_prompt / skills
+            # Priority: dev config/ > user config/ > package config/
+            subagents_rel = config.tools.subagents_dir  # e.g. "subagents"
+            search_paths = [
+                Path.cwd() / "tuningagent" / "config" / subagents_rel,
+                Path.home() / ".mini-agent" / "config" / subagents_rel,
+                Config.get_package_dir() / "config" / subagents_rel,
+            ]
+            subagents_dir = str(search_paths[-1])  # default to package dir
+            for path in search_paths:
+                if path.exists():
+                    subagents_dir = str(path.resolve())
+                    break
+
+            subagent_tools, subagent_loader = create_subagent_tools(subagents_dir)
+            if subagent_tools:
+                tools.extend(subagent_tools)
+                fixed_count = sum(1 for t in subagent_tools if isinstance(t, FixedSubagentTool))
+                print(f"{Colors.GREEN}✅ Loaded {fixed_count} fixed subagent(s) + create_subagent tool{Colors.RESET}")
+            else:
+                print(f"{Colors.YELLOW}⚠️  No subagent tools loaded{Colors.RESET}")
+        except Exception as e:
+            print(f"{Colors.YELLOW}⚠️  Failed to load subagents: {e}{Colors.RESET}")
+
     print()  # Empty line separator
-    return tools, skill_loader
+    return tools, skill_loader, subagent_tools, subagent_loader
 
 
 def add_workspace_tools(tools: List[Tool], config: Config, workspace_dir: Path):
@@ -559,7 +590,7 @@ async def run_agent(workspace_dir: Path):
     health_check_task = asyncio.create_task(run_health_check(model_pool))
 
     # 3. Initialize base tools (independent of workspace)
-    tools, skill_loader = await initialize_base_tools(config)
+    tools, skill_loader, subagent_tools, _subagent_loader = await initialize_base_tools(config)
 
     # 4. Add workspace-dependent tools
     add_workspace_tools(tools, config, workspace_dir)
@@ -605,6 +636,11 @@ async def run_agent(workspace_dir: Path):
         token_limit=config.agent.token_limit,
         workspace_dir=str(workspace_dir),
     )
+
+    # 7b. Inject runtime context into subagent tools (they need llm_client + full tool list)
+    if subagent_tools:
+        for t in subagent_tools:
+            t.set_context(model_pool, tools, workspace_dir=str(workspace_dir))
 
     # 8. Display welcome information
     print_banner()
