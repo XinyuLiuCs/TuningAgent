@@ -69,6 +69,10 @@ class ToolsConfig(BaseModel):
     enable_skills: bool = True
     skills_dir: str = "./skills"
 
+    # Subagents
+    enable_subagents: bool = True
+    subagents_dir: str = "subagents"
+
     # MCP tools
     enable_mcp: bool = True
     mcp_config_path: str = "mcp.json"
@@ -211,6 +215,8 @@ class Config(BaseModel):
             enable_memory=tools_data.get("enable_memory", tools_data.get("enable_note", True)),
             enable_skills=tools_data.get("enable_skills", True),
             skills_dir=tools_data.get("skills_dir", "./skills"),
+            enable_subagents=tools_data.get("enable_subagents", True),
+            subagents_dir=tools_data.get("subagents_dir", "subagents"),
             enable_mcp=tools_data.get("enable_mcp", True),
             mcp_config_path=tools_data.get("mcp_config_path", "mcp.json"),
             mcp=mcp_config,

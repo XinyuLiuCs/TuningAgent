@@ -27,8 +27,50 @@ A **minimal viable** agent evaluation framework for research and learning:
 - Context debugging (`/context` exports messages + tool schemas, `/log` browses log files)
 
 ### 3. Tools & Skills
-- 7 built-in tools (bash + background process management, file read/write/edit, project memory)
+- 10 built-in tools (bash + background process management, file read/write/edit, project memory, subagent tools)
 - 10 Claude Skills (hot-reload via `/reload`)
+
+### 4. Multi-Agent Delegation
+- Fixed subagents: pre-defined via `SUBAGENT.yaml` (role, tools, limits)
+- Dynamic subagents: LLM creates ad-hoc subagents at runtime via `create_subagent`
+- Foreground mode (default): blocking with cancel_event transparency + timeout
+- Background mode: non-blocking, result written to `.subagent/{id}.md`, main agent polls via `read_file`
+- Execution control: Esc cancels all (foreground + background), per-subagent cancel via `subagent_cancel`
+
+## Design Philosophy
+
+### ReAct Agent Loop
+
+The core loop follows a simple ReAct (Reason + Act) pattern: the LLM generates a response, the framework checks for tool calls — if present, tools are executed and results fed back; if absent, the turn ends. This loop repeats until the LLM produces a final text answer or `max_steps` is reached.
+
+### Multi-Agent Architecture
+
+Subagents extend the single-agent loop into a delegation model:
+
+- **Fixed subagents** are declared in `SUBAGENT.yaml` files (role, allowed tools, token limits) and registered at startup — ideal for recurring roles like code exploration.
+- **Dynamic subagents** are created by the LLM at runtime via `create_subagent`, specifying role and tools on the fly.
+- **Foreground** (default): the main agent blocks until the subagent finishes. Supports timeout and cancel_event propagation.
+- **Background**: the subagent runs asynchronously. Its result is written to `.subagent/{id}.md`; the main agent continues working and reads the file when ready.
+- **Single-layer delegation**: subagents cannot spawn further subagents — this keeps the architecture flat and debuggable.
+
+### Background Execution — Aha Moment
+
+When a background subagent is launched, the framework provides no explicit "poll" instruction to the main agent. Yet the LLM spontaneously develops a wait-and-check strategy:
+
+```
+→ subagent_code-explorer(task)    → "Background subagent started..."
+→ bash("sleep 15 && test -f .subagent/xxx.md && echo DONE || echo STILL RUNNING")
+→ "STILL RUNNING"
+→ bash("sleep 20 && test -f ...")  → "STILL RUNNING"
+→ bash("sleep 30 && test -f ...")  → "DONE"
+→ read_file(".subagent/xxx.md")    → full result
+```
+
+The framework only signals "file doesn't exist = still running." The polling strategy is entirely emergent LLM behavior.
+
+### Interaction Model
+
+Users interact only with the main agent. Pressing Esc cancels all agents (including background ones). Subagents are invisible to the user — this means future "planning" should be a mode switch within the main agent, not another subagent.
 
 ## Quick Start
 
@@ -154,10 +196,13 @@ TuningAgent/
 │   │   ├── bash_tool.py
 │   │   ├── file_tools.py
 │   │   ├── memory_tool.py
-│   │   └── skill_tool.py
+│   │   ├── skill_tool.py
+│   │   ├── subagent_tool.py    # Subagent tools + SubagentManager
+│   │   └── subagent_loader.py  # SUBAGENT.yaml loader
 │   ├── skills/               # Claude Skills (10)
 │   ├── schema/               # Data models
 │   ├── config/               # Configuration files
+│   │   ├── subagents/          # Fixed subagent definitions (SUBAGENT.yaml)
 │   └── cli.py                # CLI entry point
 ├── tests/                    # Tests
 └── pyproject.toml
@@ -179,6 +224,13 @@ TuningAgent/
 - [ ] Execution visualization (steps, tokens, tool calls)
 - [ ] Automatic failure archiving
 
+### Phase 2.5: Multi-Agent Delegation ✅
+- [x] Fixed subagents (SUBAGENT.yaml)
+- [x] Dynamic subagent creation at runtime
+- [x] Foreground + background execution modes
+- [x] Execution control (cancel, timeout)
+- [ ] Agent modes (plan mode, etc.)
+
 ### Phase 3: Tool Evaluation
 - [ ] Tool call statistics (count, success rate, duration)
 - [ ] Failure case collection
@@ -198,7 +250,6 @@ TuningAgent/
 
 ## Limitations
 
-- Single agent only (no multi-agent orchestration)
 - Manual API key configuration
 - CLI only (no web UI)
 

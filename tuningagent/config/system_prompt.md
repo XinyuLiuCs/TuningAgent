@@ -28,6 +28,8 @@ Skills are loaded dynamically using **Progressive Disclosure**:
 
 {SKILLS_METADATA}
 
+{SUBAGENTS_METADATA}
+
 ## Working Guidelines
 
 ### Task Execution

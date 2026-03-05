@@ -25,6 +25,7 @@ from tuningagent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
 from tuningagent.tools.file_tools import EditTool, ReadTool, WriteTool
 from tuningagent.tools.memory_tool import MemoryTool
 from tuningagent.tools.skill_tool import create_skill_tools
+from tuningagent.tools.subagent_tool import create_subagent_tools, RunSubagentTool, SubagentManager
 from tuningagent.utils import calculate_display_width
 
 
@@ -216,7 +217,8 @@ def print_help():
   {Colors.BRIGHT_GREEN}/context{Colors.RESET}        - Show full message context (sent to LLM next turn)
   {Colors.BRIGHT_GREEN}/log{Colors.RESET}           - Show log directory and recent files
   {Colors.BRIGHT_GREEN}/log <file>{Colors.RESET}    - Read a specific log file
-  {Colors.BRIGHT_GREEN}/reload{Colors.RESET}        - Reload skills from disk (hot-reload SKILL.md changes)
+  {Colors.BRIGHT_GREEN}/tools{Colors.RESET}         - Show registered tools by category
+  {Colors.BRIGHT_GREEN}/reload{Colors.RESET}        - Reload skills and subagents from disk
   {Colors.BRIGHT_GREEN}/exit{Colors.RESET}          - Exit program (also: exit, quit, q)
 
 {Colors.BOLD}{Colors.BRIGHT_YELLOW}Keyboard Shortcuts:{Colors.RESET}
@@ -374,11 +376,13 @@ async def initialize_base_tools(config: Config):
         config: Configuration object
 
     Returns:
-        Tuple of (list of tools, skill loader if skills enabled)
+        Tuple of (list of tools, skill loader if skills enabled, subagent tools, subagent loader)
     """
 
     tools = []
     skill_loader = None
+    subagent_tools = []
+    subagent_loader = None
 
     # 1. Bash tool and Bash Output tool
     if config.tools.enable_bash:
@@ -429,8 +433,36 @@ async def initialize_base_tools(config: Config):
         except Exception as e:
             print(f"{Colors.YELLOW}⚠️  Failed to load Skills: {e}{Colors.RESET}")
 
+    # 4. Subagents
+    if config.tools.enable_subagents:
+        print(f"{Colors.BRIGHT_CYAN}Loading Subagents...{Colors.RESET}")
+        try:
+            # Use the same config priority search as system_prompt / skills
+            # Priority: dev config/ > user config/ > package config/
+            subagents_rel = config.tools.subagents_dir  # e.g. "subagents"
+            search_paths = [
+                Path.cwd() / "tuningagent" / "config" / subagents_rel,
+                Path.home() / ".mini-agent" / "config" / subagents_rel,
+                Config.get_package_dir() / "config" / subagents_rel,
+            ]
+            subagents_dir = str(search_paths[-1])  # default to package dir
+            for path in search_paths:
+                if path.exists():
+                    subagents_dir = str(path.resolve())
+                    break
+
+            subagent_tools, subagent_loader = create_subagent_tools(subagents_dir)
+            if subagent_tools:
+                tools.extend(subagent_tools)
+                fixed_count = len(subagent_loader.loaded) if subagent_loader else 0
+                print(f"{Colors.GREEN}✅ Loaded {fixed_count} fixed subagent(s) + run_subagent/create_subagent tools{Colors.RESET}")
+            else:
+                print(f"{Colors.YELLOW}⚠️  No subagent tools loaded{Colors.RESET}")
+        except Exception as e:
+            print(f"{Colors.YELLOW}⚠️  Failed to load subagents: {e}{Colors.RESET}")
+
     print()  # Empty line separator
-    return tools, skill_loader
+    return tools, skill_loader, subagent_tools, subagent_loader
 
 
 def add_workspace_tools(tools: List[Tool], config: Config, workspace_dir: Path):
@@ -563,7 +595,7 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
     health_check_task = asyncio.create_task(run_health_check(model_pool))
 
     # 3. Initialize base tools (independent of workspace)
-    tools, skill_loader = await initialize_base_tools(config)
+    tools, skill_loader, subagent_tools, subagent_loader = await initialize_base_tools(config)
 
     # 4. Add workspace-dependent tools
     add_workspace_tools(tools, config, workspace_dir)
@@ -600,6 +632,15 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
         # Remove placeholder if skills not enabled
         system_prompt = system_prompt.replace("{SKILLS_METADATA}", "")
 
+    # 6c. Inject Subagents Metadata into System Prompt
+    if subagent_loader:
+        sa_metadata = subagent_loader.get_subagents_metadata_prompt()
+        system_prompt = system_prompt.replace("{SUBAGENTS_METADATA}", sa_metadata or "")
+        if sa_metadata:
+            print(f"{Colors.GREEN}✅ Injected {len(subagent_loader.loaded)} subagent(s) metadata into system prompt{Colors.RESET}")
+    else:
+        system_prompt = system_prompt.replace("{SUBAGENTS_METADATA}", "")
+
     # 7. Create Agent (ModelPool implements the same generate() interface as LLMClient)
     agent = Agent(
         llm_client=model_pool,
@@ -609,6 +650,12 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
         token_limit=config.agent.token_limit,
         workspace_dir=str(workspace_dir),
     )
+
+    # 7b. Inject runtime context into subagent tools (they need llm_client + full tool list)
+    if subagent_tools:
+        for t in subagent_tools:
+            if hasattr(t, "set_context"):
+                t.set_context(model_pool, tools, workspace_dir=str(workspace_dir), parent_agent=agent)
 
     # 8. Display welcome information
     print_banner()
@@ -624,7 +671,7 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
     # 9. Setup prompt_toolkit session
     # Command completer
     command_completer = WordCompleter(
-        ["/help", "/clear", "/rewind", "/history", "/stats", "/health", "/model", "/model-stats", "/context", "/log", "/reload", "/exit", "/quit", "/q"],
+        ["/help", "/clear", "/rewind", "/history", "/stats", "/health", "/model", "/model-stats", "/context", "/log", "/tools", "/reload", "/exit", "/quit", "/q"],
         ignore_case=True,
         sentence=True,
     )
@@ -810,28 +857,86 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
                         read_log_file(filename)
                     continue
 
+                elif command == "/tools":
+                    from tuningagent.tools.subagent_tool import RunSubagentTool, CreateSubagentTool, SubagentCancelTool
+                    from tuningagent.tools.skill_tool import GetSkillTool
+                    from tuningagent.tools.bash_tool import BashTool, BashOutputTool, BashKillTool
+                    from tuningagent.tools.file_tools import ReadTool, WriteTool, EditTool
+                    from tuningagent.tools.memory_tool import MemoryTool
+
+                    categories = {
+                        "Bash": [],
+                        "File Operations": [],
+                        "Memory": [],
+                        "Skills": [],
+                        "Subagents": [],
+                        "Other": [],
+                    }
+                    for t in agent.tools.values():
+                        if isinstance(t, (BashTool, BashOutputTool, BashKillTool)):
+                            categories["Bash"].append(t)
+                        elif isinstance(t, (ReadTool, WriteTool, EditTool)):
+                            categories["File Operations"].append(t)
+                        elif isinstance(t, MemoryTool):
+                            categories["Memory"].append(t)
+                        elif isinstance(t, GetSkillTool):
+                            categories["Skills"].append(t)
+                        elif isinstance(t, (RunSubagentTool, CreateSubagentTool, SubagentCancelTool)):
+                            categories["Subagents"].append(t)
+                        else:
+                            categories["Other"].append(t)
+
+                    print(f"\n{Colors.BOLD}{Colors.BRIGHT_CYAN}Registered Tools ({len(agent.tools)}):{Colors.RESET}")
+                    for cat, cat_tools in categories.items():
+                        if not cat_tools:
+                            continue
+                        print(f"\n  {Colors.BOLD}{Colors.BRIGHT_YELLOW}{cat}{Colors.RESET}")
+                        for t in cat_tools:
+                            print(f"    {Colors.BRIGHT_WHITE}{t.name}{Colors.RESET}: {Colors.DIM}{t.description[:80]}{Colors.RESET}")
+                    print()
+                    continue
+
                 elif command == "/reload":
-                    if not skill_loader:
-                        print(f"{Colors.YELLOW}⚠️  Skills not enabled{Colors.RESET}\n")
+                    if not skill_loader and not subagent_loader:
+                        print(f"{Colors.YELLOW}⚠️  Nothing to reload (skills and subagents not enabled){Colors.RESET}\n")
                         continue
-                    result = skill_loader.reload_skills()
-                    # Refresh Level 1 metadata in system prompt
-                    new_metadata = skill_loader.get_skills_metadata_prompt()
-                    sys_content = agent.messages[0].content
                     import re as _re
-                    new_sys = _re.sub(
-                        r"## Available Skills\n.*?(?=\n## Working Guidelines)",
-                        new_metadata if new_metadata else "",
-                        sys_content,
-                        flags=_re.DOTALL,
-                    )
-                    agent.messages[0] = Message(role="system", content=new_sys)
-                    # Print summary
-                    print(f"{Colors.GREEN}✅ Skills reloaded: {result['total']} total{Colors.RESET}")
-                    if result["added"]:
-                        print(f"  + {', '.join(result['added'])}")
-                    if result["removed"]:
-                        print(f"  - {', '.join(result['removed'])}")
+                    sys_content = agent.messages[0].content
+                    reloaded_any = False
+                    # Reload skills
+                    if skill_loader:
+                        result = skill_loader.reload_skills()
+                        new_metadata = skill_loader.get_skills_metadata_prompt()
+                        sys_content = _re.sub(
+                            r"## Available Skills\n.*?(?=\n## |\n*$)",
+                            (new_metadata + "\n") if new_metadata else "",
+                            sys_content,
+                            flags=_re.DOTALL,
+                        )
+                        print(f"{Colors.GREEN}✅ Skills reloaded: {result['total']} total{Colors.RESET}")
+                        if result["added"]:
+                            print(f"  + {', '.join(result['added'])}")
+                        if result["removed"]:
+                            print(f"  - {', '.join(result['removed'])}")
+                        reloaded_any = True
+                    # Reload subagents
+                    if subagent_loader:
+                        sa_result = subagent_loader.reload()
+                        new_sa_metadata = subagent_loader.get_subagents_metadata_prompt()
+                        sys_content = _re.sub(
+                            r"## Available Subagents\n.*?(?=\n## |\n*$)",
+                            (new_sa_metadata + "\n") if new_sa_metadata else "",
+                            sys_content,
+                            flags=_re.DOTALL,
+                        )
+                        print(f"{Colors.GREEN}✅ Subagents reloaded: {sa_result['total']} total{Colors.RESET}")
+                        if sa_result["added"]:
+                            print(f"  + {', '.join(sa_result['added'])}")
+                        if sa_result["removed"]:
+                            print(f"  - {', '.join(sa_result['removed'])}")
+                        reloaded_any = True
+                    if reloaded_any:
+                        agent.messages[0] = Message(role="system", content=sys_content)
                     print()
                     continue
 
@@ -873,6 +978,7 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
                                     print(f"\n{Colors.BRIGHT_YELLOW}⏹️  Esc pressed, cancelling...{Colors.RESET}")
                                     esc_cancelled[0] = True
                                     cancel_event.set()
+                                    SubagentManager.cancel_all()
                                     break
                             esc_listener_stop.wait(0.05)
                     except Exception:
@@ -898,6 +1004,7 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
                                     print(f"\n{Colors.BRIGHT_YELLOW}⏹️  Esc pressed, cancelling...{Colors.RESET}")
                                     esc_cancelled[0] = True
                                     cancel_event.set()
+                                    SubagentManager.cancel_all()
                                     break
                     finally:
                         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
