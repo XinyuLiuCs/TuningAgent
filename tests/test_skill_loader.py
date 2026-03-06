@@ -57,8 +57,8 @@ name: test-skill
 description: A test skill
 license: MIT
 allowed-tools:
-  - read_file
-  - write_file
+  - file_read
+  - file_write
 metadata:
   author: Test Author
   version: "1.0"
@@ -74,7 +74,7 @@ Skill content here.
         assert skill is not None
         assert skill.name == "test-skill"
         assert skill.license == "MIT"
-        assert skill.allowed_tools == ["read_file", "write_file"]
+        assert skill.allowed_tools == ["file_read", "file_write"]
         assert skill.metadata["author"] == "Test Author"
         assert skill.metadata["version"] == "1.0"
 
@@ -213,7 +213,7 @@ If you need forms, read forms.md and follow instructions.
         # Check that paths are converted to absolute and include instructions
         assert str(skill_dir / "reference.md") in skill.content
         assert str(skill_dir / "forms.md") in skill.content
-        assert "use read_file" in skill.content.lower()
+        assert "use file_read" in skill.content.lower()
 
 
 def test_script_path_processing():

@@ -18,7 +18,7 @@ class GetSkillTool(Tool):
 
     @property
     def name(self) -> str:
-        return "get_skill"
+        return "skill_get"
 
     @property
     def description(self) -> str:

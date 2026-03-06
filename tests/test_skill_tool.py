@@ -107,5 +107,5 @@ def test_tool_count_optimization():
 
         # Verify it's GetSkillTool
         tool = tools[0]
-        assert tool.name == "get_skill"
+        assert tool.name == "skill_get"
         assert "get complete content" in tool.description.lower() or "获取" in tool.description

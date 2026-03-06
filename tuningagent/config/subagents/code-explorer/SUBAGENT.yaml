@@ -4,7 +4,7 @@ max_steps: 100
 token_limit: 400000
 run_in_background: true
 allowed_tools:
-  - read_file
+  - file_read
   - bash
   - bash_output
 system_prompt: |
