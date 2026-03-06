@@ -60,7 +60,7 @@ def create_skill_tools(
     """
     Create skill tool for Progressive Disclosure
 
-    Only provides get_skill tool - the agent uses metadata in system prompt
+    Only provides skill_get tool - the agent uses metadata in system prompt
     to know what skills are available, then loads them on-demand.
 
     Args:
@@ -76,7 +76,7 @@ def create_skill_tools(
     skills = loader.discover_skills()
     print(f"✅ Discovered {len(skills)} Claude Skills")
 
-    # Create only the get_skill tool (Progressive Disclosure Level 2)
+    # Create only the skill_get tool (Progressive Disclosure Level 2)
     tools = [
         GetSkillTool(loader),
     ]

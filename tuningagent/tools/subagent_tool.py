@@ -194,7 +194,7 @@ async def _background_wrapper(
             output_path.write_text(
                 f"Subagent {subagent_id} ended without writing result.\n"
                 "This may indicate cancellation or the subagent "
-                "forgot to use write_file."
+                "forgot to use file_write."
             )
         SubagentManager.cleanup(subagent_id)
 
@@ -314,7 +314,7 @@ async def _execute_background(
         system_prompt
         + f"\n\n## Output\n"
         f"You are running as a background subagent. You MUST write your complete "
-        f"final result to: .subagent/{subagent_id}.md using write_file before finishing.\n"
+        f"final result to: .subagent/{subagent_id}.md using file_write before finishing.\n"
         f"This is the ONLY file you are allowed to write — all other read-only constraints still apply."
     )
 

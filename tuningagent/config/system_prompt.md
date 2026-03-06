@@ -11,18 +11,18 @@ You have access to specialized skills that provide expert guidance and capabilit
 
 Skills are loaded dynamically using **Progressive Disclosure**:
 - **Level 1 (Metadata)**: You see skill names and descriptions (below) at startup
-- **Level 2 (Full Content)**: Load a skill's complete guidance using `get_skill(skill_name)`
+- **Level 2 (Full Content)**: Load a skill's complete guidance using `skill_get(skill_name)`
 - **Level 3+ (Resources)**: Skills may reference additional files and scripts as needed
 
 **How to Use Skills:**
 1. Check the metadata below to identify relevant skills for your task
-2. Call `get_skill(skill_name)` to load the full guidance
+2. Call `skill_get(skill_name)` to load the full guidance
 3. Follow the skill's instructions and use appropriate tools (bash, file operations, etc.)
 
 **Important Notes:**
 - Skills provide expert patterns and procedural knowledge
 - **For Python skills** (pdf, pptx, docx, xlsx, canvas-design, algorithmic-art): Setup Python environment FIRST (see Python Environment Management below)
-- Skills may reference scripts and resources - use bash or read_file to access them
+- Skills may reference scripts and resources - use bash or file_read to access them
 
 ---
 
@@ -73,7 +73,7 @@ Skills are loaded dynamically using **Progressive Disclosure**:
 - **Use skills** - leverage specialized knowledge when relevant
 
 ## Project Memory
-Persistent memory loaded from `AGENT.md` at startup. Call `update_memory` (full overwrite) to maintain it.
+Persistent memory loaded from `AGENT.md` at startup. Call `memory_update` (full overwrite) to maintain it.
 
 **Save:** project conventions, user preferences, key decisions, working solutions to recurring problems.
 **Skip:** in-progress task state, facts obvious from code, unverified guesses.
