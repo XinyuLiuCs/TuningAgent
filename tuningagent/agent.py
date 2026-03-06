@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from time import perf_counter
 from typing import Optional
@@ -12,6 +13,7 @@ from .llm import LLMClient
 from .logger import AgentLogger
 from .schema import Message
 from .tools.base import Tool, ToolResult
+from .tools.mode_tool import MODE_PROMPTS, VALID_MODES, WRITE_TOOLS
 from .utils import calculate_display_width
 
 
@@ -56,7 +58,9 @@ class Agent:
         logger: Optional[AgentLogger] = None,
     ):
         self.llm = llm_client
-        self.tools = {tool.name: tool for tool in tools}
+        self._all_tools: dict[str, Tool] = {tool.name: tool for tool in tools}
+        self.tools: dict[str, Tool] = dict(self._all_tools)
+        self.mode: str = "build"
         self.max_steps = max_steps
         self.token_limit = token_limit
         self.workspace_dir = Path(workspace_dir)
@@ -79,10 +83,75 @@ class Agent:
         # Initialize logger (use provided logger or create a new one)
         self.logger = logger if logger is not None else AgentLogger()
 
+        # Inject initial mode prompt into system message
+        self._apply_mode_prompt()
+
         # Token usage from last API response (updated after each LLM call)
         self.api_total_tokens: int = 0
         # Flag to skip token check right after summary (avoid consecutive triggers)
         self._skip_next_token_check: bool = False
+
+    def switch_mode(self, new_mode: str) -> dict:
+        """Switch operating mode and update tool availability + system prompt.
+
+        Returns metadata dict with mode info for the caller to display.
+        """
+        if new_mode not in VALID_MODES:
+            return {"error": f"Invalid mode '{new_mode}'. Must be one of: {', '.join(VALID_MODES)}"}
+
+        old_mode = self.mode
+        self.mode = new_mode
+        removed = self._apply_mode_filter()
+        self._apply_mode_prompt()
+
+        return {
+            "old_mode": old_mode,
+            "new_mode": new_mode,
+            "tool_count": len(self.tools),
+            "removed": removed,
+        }
+
+    def _apply_mode_filter(self) -> list[str]:
+        """Rebuild self.tools from _all_tools based on current mode.
+
+        Returns list of tool names that were removed (empty for build mode).
+        """
+        if self.mode == "build":
+            self.tools = dict(self._all_tools)
+            return []
+
+        # Ask/Plan: remove write tools
+        removed = []
+        self.tools = {}
+        for name, tool in self._all_tools.items():
+            if name in WRITE_TOOLS:
+                removed.append(name)
+            else:
+                self.tools[name] = tool
+        return removed
+
+    def _apply_mode_prompt(self):
+        """Inject or replace the ## Current Mode section in the system prompt."""
+        new_section = MODE_PROMPTS[self.mode]
+        sys_content = self.messages[0].content
+
+        # Try to replace existing section
+        pattern = r"## Current Mode\n.*?(?=\n## |\Z)"
+        replaced, count = re.subn(pattern, new_section, sys_content, count=1, flags=re.DOTALL)
+
+        if count > 0:
+            sys_content = replaced
+        else:
+            # Insert before ## Workspace Context (or ## Current Workspace), or append
+            insert_pattern = r"(\n## (?:Workspace Context|Current Workspace))"
+            match = re.search(insert_pattern, sys_content)
+            if match:
+                sys_content = sys_content[: match.start()] + "\n\n" + new_section + sys_content[match.start() :]
+            else:
+                sys_content = sys_content + "\n\n" + new_section
+
+        self.messages[0] = Message(role="system", content=sys_content)
+        self.system_prompt = sys_content
 
     def add_user_message(self, content: str):
         """Add a user message to history."""
