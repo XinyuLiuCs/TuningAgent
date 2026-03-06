@@ -1,12 +1,14 @@
 """Tests for the subagent system."""
 
 import asyncio
+import json
 import textwrap
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from tuningagent.logger import AgentLogger
 from tuningagent.schema import LLMResponse, TokenUsage
 from tuningagent.tools.base import Tool, ToolResult
 from tuningagent.tools.subagent_loader import SubagentConfig, SubagentLoader
@@ -15,6 +17,7 @@ from tuningagent.tools.subagent_tool import (
     RunSubagentTool,
     SubagentCancelTool,
     SubagentManager,
+    _execute_foreground,
     _is_subagent_tool,
     _run_subagent,
     create_subagent_tools,
@@ -804,3 +807,111 @@ class TestCreateSubagentToolsFactory:
         tools, loader = create_subagent_tools(str(tmp_path))
         assert len(tools) == 3  # always 3 gateway tools
         assert "my-agent" in loader.loaded
+
+
+# ---------------------------------------------------------------------------
+# Logger correlation tests
+# ---------------------------------------------------------------------------
+
+
+class TestSubagentLoggerCorrelation:
+    def _make_logger(self, tmp_path, **kwargs):
+        """Create an AgentLogger using a temp directory."""
+        logger = AgentLogger.__new__(AgentLogger)
+        logger.log_dir = tmp_path
+        logger.session_id = kwargs.get("session_id")
+        logger.agent_id = kwargs.get("agent_id", "agent")
+        logger.log_file = None
+        logger.turn = 0
+        logger.step = 0
+        return logger
+
+    async def test_foreground_creates_child_logger_in_same_session(self, tmp_path):
+        """Foreground subagent should get a logger sharing the parent's session_id."""
+        parent_logger = self._make_logger(tmp_path)
+        parent_logger.start_turn()  # generates session_id
+
+        captured = {}
+
+        async def mock_run(*args, **kwargs):
+            captured["logger"] = kwargs.get("logger")
+            return "child result"
+
+        with patch("tuningagent.tools.subagent_tool._run_subagent", side_effect=mock_run):
+            result = await _execute_foreground(
+                llm_client=AsyncMock(),
+                system_prompt="test",
+                all_tools=[],
+                task="do it",
+                max_steps=5,
+                token_limit=1000,
+                workspace_dir="./workspace",
+                allowed_tools=None,
+                cancel_event=None,
+                timeout=30,
+                label="test-sub",
+                parent_logger=parent_logger,
+            )
+
+        assert result.success
+        child_logger = captured["logger"]
+        assert child_logger is not None
+        assert child_logger.session_id == parent_logger.session_id
+        assert child_logger.agent_id.startswith("test-sub")
+
+        # Parent should have logged subagent_dispatched
+        parent_lines = parent_logger.log_file.read_text().strip().split("\n")
+        dispatched = [json.loads(l) for l in parent_lines if "subagent_dispatched" in l]
+        assert len(dispatched) == 1
+        assert dispatched[0]["data"]["mode"] == "foreground"
+
+    async def test_run_subagent_passes_logger_to_agent(self, tmp_path):
+        """_run_subagent should forward logger to Agent constructor."""
+        parent_logger = self._make_logger(tmp_path, session_id="shared-session")
+        child_logger = self._make_logger(
+            tmp_path, session_id="shared-session", agent_id="child-abc"
+        )
+
+        with patch("tuningagent.agent.Agent") as MockAgent:
+            mock_instance = AsyncMock()
+            mock_instance.run = AsyncMock(return_value="ok")
+            MockAgent.return_value = mock_instance
+
+            await _run_subagent(
+                llm_client=AsyncMock(),
+                system_prompt="test",
+                tools=[],
+                task="do it",
+                logger=child_logger,
+            )
+
+            call_kwargs = MockAgent.call_args
+            passed_logger = call_kwargs.kwargs.get("logger") or call_kwargs[1].get("logger")
+            assert passed_logger is child_logger
+
+    async def test_no_parent_logger_still_works(self, tmp_path):
+        """When parent_logger is None, no child logger is created."""
+        captured = {}
+
+        async def mock_run(*args, **kwargs):
+            captured["logger"] = kwargs.get("logger")
+            return "result"
+
+        with patch("tuningagent.tools.subagent_tool._run_subagent", side_effect=mock_run):
+            result = await _execute_foreground(
+                llm_client=AsyncMock(),
+                system_prompt="test",
+                all_tools=[],
+                task="do it",
+                max_steps=5,
+                token_limit=1000,
+                workspace_dir="./workspace",
+                allowed_tools=None,
+                cancel_event=None,
+                timeout=30,
+                label="test",
+                parent_logger=None,
+            )
+
+        assert result.success
+        assert captured["logger"] is None

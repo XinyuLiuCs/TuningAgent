@@ -12,17 +12,27 @@ class AgentLogger:
     """Agent run logger
 
     Writes structured JSONL logs with session/turn/step hierarchy:
-    - Session: one CLI interaction (one Agent instance lifetime), one .jsonl file
+    - Session: one CLI interaction, grouped in a session subdirectory
     - Turn: one user input → full agent response (one agent.run() call)
     - Step: one iteration of the agent loop (one LLM call + N tool executions)
 
-    Each line is a self-contained JSON object:
-    {"event": "llm_response", "turn": 1, "step": 2, "timestamp": "...", "data": {...}}
+    Directory layout:
+        ~/.mini-agent/log/<session_id>/
+            agent.jsonl              # main agent
+            code-explorer-a1b2.jsonl # subagent
+
+    Each line is a self-contained JSON object with session_id and agent_id fields.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        session_id: str | None = None,
+        agent_id: str = "agent",
+    ):
         self.log_dir = Path.home() / ".mini-agent" / "log"
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.session_id: str | None = session_id
+        self.agent_id: str = agent_id
         self.log_file: Path | None = None
         self.turn: int = 0
         self.step: int = 0
@@ -30,12 +40,16 @@ class AgentLogger:
     def start_turn(self):
         """Start a new turn (one agent.run() invocation).
 
-        On the first call, lazily creates the JSONL file and emits session_start.
-        Every call increments turn, resets step, and emits turn_start.
+        On the first call, lazily creates the session directory and JSONL file,
+        then emits session_start.  Every call increments turn, resets step,
+        and emits turn_start.
         """
         if self.log_file is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.log_file = self.log_dir / f"session_{timestamp}.jsonl"
+            if self.session_id is None:
+                self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            session_dir = self.log_dir / self.session_id
+            session_dir.mkdir(parents=True, exist_ok=True)
+            self.log_file = session_dir / f"{self.agent_id}.jsonl"
             self._write_event("session_start", {})
 
         self.turn += 1
@@ -112,9 +126,21 @@ class AgentLogger:
 
         self._write_event("tool_result", tool_result_data)
 
+    def end_session(self):
+        """Emit session_end event."""
+        self._write_event("session_end", {})
+
     def log_rewind(self, from_turn: int, to_turn: int):
         """Emit a rewind event marking a timeline fork."""
         self._write_event("rewind", {"from_turn": from_turn, "to_turn": to_turn})
+
+    def log_subagent_dispatched(self, subagent_id: str, mode: str, task: str):
+        """Record that a subagent was dispatched from this agent."""
+        self._write_event("subagent_dispatched", {
+            "subagent_id": subagent_id,
+            "mode": mode,
+            "task": task[:200],
+        })
 
     def _write_event(self, event: str, data: dict[str, Any]):
         """Write a single JSONL event line."""
@@ -123,6 +149,8 @@ class AgentLogger:
 
         record = {
             "event": event,
+            "session_id": self.session_id,
+            "agent_id": self.agent_id,
             "turn": self.turn,
             "step": self.step,
             "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3],

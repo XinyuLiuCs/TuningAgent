@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..logger import AgentLogger
 from .base import Tool, ToolResult
 from .subagent_loader import SubagentConfig, SubagentLoader
 
@@ -103,6 +104,7 @@ async def _run_subagent(
     workspace_dir: str = "./workspace",
     allowed_tools: Optional[List[str]] = None,
     cancel_event: Optional[asyncio.Event] = None,
+    logger: Optional[AgentLogger] = None,
 ) -> str:
     """Create and run a child agent, returning only its final result.
 
@@ -122,6 +124,7 @@ async def _run_subagent(
         workspace_dir: Workspace directory (inherited from main agent).
         allowed_tools: If set, only these tool names are available to the child.
         cancel_event: Optional cancellation event for cooperative stopping.
+        logger: Optional pre-configured logger (shares session_id with parent).
 
     Returns:
         The child agent's final response string.
@@ -145,6 +148,7 @@ async def _run_subagent(
         max_steps=max_steps,
         token_limit=token_limit,
         workspace_dir=workspace_dir,
+        logger=logger,
     )
     child.add_user_message(task)
     result = await child.run(cancel_event=cancel_event)
@@ -163,6 +167,7 @@ async def _background_wrapper(
     token_limit: int,
     workspace_dir: str,
     allowed_tools: Optional[List[str]],
+    logger: Optional[AgentLogger] = None,
 ) -> None:
     """Wrapper that runs a subagent in background and ensures output file exists."""
     try:
@@ -176,6 +181,7 @@ async def _background_wrapper(
             workspace_dir=workspace_dir,
             allowed_tools=allowed_tools,
             cancel_event=cancel_event,
+            logger=logger,
         )
     except asyncio.CancelledError:
         pass
@@ -216,6 +222,8 @@ async def _execute_foreground(
     cancel_event: Optional[asyncio.Event],
     timeout: int,
     label: str,
+    parent_logger: Optional[AgentLogger] = None,
+    subagent_id: Optional[str] = None,
 ) -> ToolResult:
     """Run subagent in foreground with cooperative timeout and cancel_event.
 
@@ -224,6 +232,19 @@ async def _execute_foreground(
     propagate to the parent agent.  Parent→child propagation (user Esc) is
     handled via an asyncio.wait listener on the parent's cancel_event.
     """
+    # Build child logger sharing parent's session_id
+    child_logger = None
+    if parent_logger is not None:
+        sid = subagent_id or f"{label}-{uuid.uuid4().hex[:8]}"
+        # Ensure parent session_id is initialized
+        if parent_logger.session_id is None:
+            parent_logger.start_turn()
+        child_logger = AgentLogger(
+            session_id=parent_logger.session_id,
+            agent_id=sid,
+        )
+        parent_logger.log_subagent_dispatched(sid, "foreground", task)
+
     # Foreground child gets its own cancel_event — mirrors bg_cancel_event
     fg_cancel_event = asyncio.Event()
 
@@ -238,6 +259,7 @@ async def _execute_foreground(
             workspace_dir=workspace_dir,
             allowed_tools=allowed_tools,
             cancel_event=fg_cancel_event,
+            logger=child_logger,
         )
     )
 
@@ -295,8 +317,20 @@ async def _execute_background(
     workspace_dir: str,
     allowed_tools: Optional[List[str]],
     subagent_id: str,
+    parent_logger: Optional[AgentLogger] = None,
 ) -> ToolResult:
     """Start subagent in background, return immediately."""
+    # Build child logger sharing parent's session_id
+    child_logger = None
+    if parent_logger is not None:
+        if parent_logger.session_id is None:
+            parent_logger.start_turn()
+        child_logger = AgentLogger(
+            session_id=parent_logger.session_id,
+            agent_id=subagent_id,
+        )
+        parent_logger.log_subagent_dispatched(subagent_id, "background", task)
+
     workspace = Path(workspace_dir)
     output_dir = workspace / ".subagent"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -333,6 +367,7 @@ async def _execute_background(
         token_limit=token_limit,
         workspace_dir=workspace_dir,
         allowed_tools=augmented_tools,
+        logger=child_logger,
     )
 
     SubagentManager.start(subagent_id, coro, bg_cancel_event)
@@ -420,10 +455,12 @@ class RunSubagentTool(Tool):
                 error=f"Subagent '{name}' not found. Available subagents: {available}",
             )
 
-        # Resolve cancel_event from parent agent
+        # Resolve cancel_event and logger from parent agent
         cancel_event = None
+        parent_logger = None
         if self._parent_agent is not None:
             cancel_event = getattr(self._parent_agent, "cancel_event", None)
+            parent_logger = getattr(self._parent_agent, "logger", None)
 
         if config.run_in_background:
             subagent_id = f"{config.name}-{uuid.uuid4().hex[:8]}"
@@ -437,8 +474,10 @@ class RunSubagentTool(Tool):
                 workspace_dir=self._workspace_dir,
                 allowed_tools=config.allowed_tools,
                 subagent_id=subagent_id,
+                parent_logger=parent_logger,
             )
         else:
+            subagent_id = f"{config.name}-{uuid.uuid4().hex[:8]}"
             return await _execute_foreground(
                 llm_client=self._llm_client,
                 system_prompt=config.system_prompt,
@@ -451,6 +490,8 @@ class RunSubagentTool(Tool):
                 cancel_event=cancel_event,
                 timeout=config.timeout,
                 label=config.name,
+                parent_logger=parent_logger,
+                subagent_id=subagent_id,
             )
 
 
@@ -546,10 +587,12 @@ class CreateSubagentTool(Tool):
         if not self._llm_client:
             return ToolResult(success=False, error="Subagent not initialized (missing llm_client)")
 
-        # Resolve cancel_event from parent agent
+        # Resolve cancel_event and logger from parent agent
         cancel_event = None
+        parent_logger = None
         if self._parent_agent is not None:
             cancel_event = getattr(self._parent_agent, "cancel_event", None)
+            parent_logger = getattr(self._parent_agent, "logger", None)
 
         effective_timeout = timeout if timeout is not None else self._default_timeout
 
@@ -565,8 +608,10 @@ class CreateSubagentTool(Tool):
                 workspace_dir=self._workspace_dir,
                 allowed_tools=allowed_tools,
                 subagent_id=subagent_id,
+                parent_logger=parent_logger,
             )
         else:
+            subagent_id = f"dynamic-{uuid.uuid4().hex[:8]}"
             return await _execute_foreground(
                 llm_client=self._llm_client,
                 system_prompt=system_prompt,
@@ -579,6 +624,8 @@ class CreateSubagentTool(Tool):
                 cancel_event=cancel_event,
                 timeout=effective_timeout,
                 label="dynamic",
+                parent_logger=parent_logger,
+                subagent_id=subagent_id,
             )
 
 

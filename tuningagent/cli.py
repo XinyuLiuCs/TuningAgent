@@ -83,27 +83,49 @@ def show_log_directory(open_file_manager: bool = True) -> None:
         print(f"{Colors.RED}Log directory does not exist: {log_dir}{Colors.RESET}\n")
         return
 
-    log_files = list(log_dir.glob("*.log")) + list(log_dir.glob("*.jsonl"))
+    # Collect session directories (new layout) and flat files (legacy)
+    session_dirs = sorted(
+        [d for d in log_dir.iterdir() if d.is_dir()],
+        key=lambda d: d.stat().st_mtime,
+        reverse=True,
+    )
+    flat_files = list(log_dir.glob("*.log")) + list(log_dir.glob("*.jsonl"))
+    flat_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
 
-    if not log_files:
+    if not session_dirs and not flat_files:
         print(f"{Colors.YELLOW}No log files found in directory.{Colors.RESET}\n")
         return
 
-    # Sort by modification time (newest first)
-    log_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-
     print(f"{Colors.DIM}{'─' * 60}{Colors.RESET}")
-    print(f"{Colors.BOLD}{Colors.BRIGHT_YELLOW}Available Log Files (newest first):{Colors.RESET}")
+    print(f"{Colors.BOLD}{Colors.BRIGHT_YELLOW}Sessions (newest first):{Colors.RESET}")
 
-    for i, log_file in enumerate(log_files[:10], 1):
-        mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
-        size = log_file.stat().st_size
-        size_str = f"{size:,}" if size < 1024 else f"{size / 1024:.1f}K"
-        print(f"  {Colors.GREEN}{i:2d}.{Colors.RESET} {Colors.BRIGHT_WHITE}{log_file.name}{Colors.RESET}")
-        print(f"      {Colors.DIM}Modified: {mtime.strftime('%Y-%m-%d %H:%M:%S')}, Size: {size_str}{Colors.RESET}")
+    shown = 0
+    for session_dir in session_dirs:
+        if shown >= 10:
+            break
+        log_files = sorted(session_dir.glob("*.jsonl"))
+        if not log_files:
+            continue
+        mtime = datetime.fromtimestamp(session_dir.stat().st_mtime)
+        print(f"\n  {Colors.BRIGHT_CYAN}{session_dir.name}/{Colors.RESET}  {Colors.DIM}{mtime.strftime('%Y-%m-%d %H:%M:%S')}{Colors.RESET}")
+        for lf in log_files:
+            size = lf.stat().st_size
+            size_str = f"{size:,}" if size < 1024 else f"{size / 1024:.1f}K"
+            print(f"    {Colors.BRIGHT_WHITE}{lf.name}{Colors.RESET}  {Colors.DIM}({size_str}){Colors.RESET}")
+        shown += 1
 
-    if len(log_files) > 10:
-        print(f"  {Colors.DIM}... and {len(log_files) - 10} more files{Colors.RESET}")
+    # Show legacy flat files if any
+    if flat_files:
+        print(f"\n  {Colors.DIM}Legacy flat files:{Colors.RESET}")
+        for lf in flat_files[:5]:
+            mtime = datetime.fromtimestamp(lf.stat().st_mtime)
+            size = lf.stat().st_size
+            size_str = f"{size:,}" if size < 1024 else f"{size / 1024:.1f}K"
+            print(f"    {Colors.BRIGHT_WHITE}{lf.name}{Colors.RESET}  {Colors.DIM}({size_str}) {mtime.strftime('%Y-%m-%d %H:%M:%S')}{Colors.RESET}")
+
+    remaining = len(session_dirs) - shown
+    if remaining > 0:
+        print(f"\n  {Colors.DIM}... and {remaining} more sessions{Colors.RESET}")
 
     print(f"{Colors.DIM}{'─' * 60}{Colors.RESET}")
 
@@ -120,25 +142,40 @@ def _open_directory_in_file_manager(directory: Path) -> None:
 
     try:
         if system == "Darwin":
-            subprocess.run(["open", str(directory)], check=False)
+            subprocess.run(["open", str(directory)], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif system == "Windows":
-            subprocess.run(["explorer", str(directory)], check=False)
+            subprocess.run(["explorer", str(directory)], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif system == "Linux":
-            subprocess.run(["xdg-open", str(directory)], check=False)
+            result = subprocess.run(["xdg-open", str(directory)], check=False,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if result.returncode != 0:
+                print(f"  {Colors.DIM}Path: {directory}{Colors.RESET}")
     except FileNotFoundError:
-        print(f"{Colors.YELLOW}Could not open file manager. Please navigate manually.{Colors.RESET}")
-    except Exception as e:
-        print(f"{Colors.YELLOW}Error opening file manager: {e}{Colors.RESET}")
+        print(f"  {Colors.DIM}Path: {directory}{Colors.RESET}")
+    except Exception:
+        pass
 
 
 def read_log_file(filename: str) -> None:
     """Read and display a specific log file.
 
     Args:
-        filename: The log filename to read
+        filename: The log filename to read (bare name or session_id/name)
     """
     log_dir = get_log_directory()
     log_file = log_dir / filename
+
+    # If not found at top level, search session subdirectories
+    if not log_file.exists() or not log_file.is_file():
+        bare = Path(filename).name
+        for session_dir in sorted(log_dir.iterdir(), reverse=True):
+            if session_dir.is_dir():
+                candidate = session_dir / bare
+                if candidate.exists():
+                    log_file = candidate
+                    break
 
     if not log_file.exists() or not log_file.is_file():
         print(f"\n{Colors.RED}❌ Log file not found: {log_file}{Colors.RESET}\n")
@@ -1044,6 +1081,7 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
         except KeyboardInterrupt:
             print(f"\n\n{Colors.BRIGHT_YELLOW}👋 Interrupt signal detected, exiting...{Colors.RESET}\n")
             print_stats(agent, session_start, model_pool)
+            agent.logger.end_session()
             break
 
         except Exception as e:
@@ -1052,6 +1090,7 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
 
     # 11. Cleanup
     try:
+        agent.logger.end_session()
         print(f"{Colors.GREEN}✅ Agent stopped{Colors.RESET}\n")
     except Exception as e:
         print(f"{Colors.YELLOW}Error during cleanup (can be ignored): {e}{Colors.RESET}\n")
