@@ -2,12 +2,12 @@
 
 import asyncio
 import tempfile
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tuningagent.agent import Agent
-from tuningagent.schema import Message
+from tuningagent.agent import Agent, PLAN_SUMMARY_PROMPT
+from tuningagent.schema import Message, LLMResponse
 from tuningagent.tools.base import Tool, ToolResult
 from tuningagent.tools.mode_tool import (
     MODE_PROMPTS,
@@ -234,3 +234,155 @@ class TestModeSwitchTool:
         result = await tool.execute(mode="plan", reason="need to plan first")
         assert result.success
         assert "need to plan first" in result.content
+
+
+# ---------------------------------------------------------------------------
+# Tests: Plan context summarization
+# ---------------------------------------------------------------------------
+
+def _mock_llm_generate(content="Summary text"):
+    """Return an AsyncMock for llm.generate that returns a simple LLMResponse."""
+    mock = AsyncMock(return_value=LLMResponse(content=content, thinking=None, tool_calls=[], finish_reason="stop", usage=None))
+    return mock
+
+
+class TestCreateSummaryCustomPrompt:
+    async def test_custom_prompt_is_used(self):
+        agent = _make_agent()
+        agent.llm.generate = _mock_llm_generate("custom summary")
+        msgs = [Message(role="assistant", content="did stuff")]
+        result = await agent._create_summary(msgs, round_num=1, summary_prompt="My custom prompt")
+        assert result == "custom summary"
+        # Verify the custom prompt was included in the LLM call
+        call_args = agent.llm.generate.call_args
+        user_msg = call_args.kwargs.get("messages", call_args.args[0] if call_args.args else None)
+        prompt_text = user_msg[1].content if user_msg else ""
+        assert "My custom prompt" in prompt_text
+
+    async def test_default_prompt_when_none(self):
+        agent = _make_agent()
+        agent.llm.generate = _mock_llm_generate("default summary")
+        msgs = [Message(role="assistant", content="did stuff")]
+        result = await agent._create_summary(msgs, round_num=1)
+        assert result == "default summary"
+        call_args = agent.llm.generate.call_args
+        user_msg = call_args.kwargs.get("messages", call_args.args[0] if call_args.args else None)
+        prompt_text = user_msg[1].content if user_msg else ""
+        assert "Agent execution process" in prompt_text
+
+
+class TestPlanStartIdx:
+    def test_plan_start_idx_set_on_plan_mode(self):
+        agent = _make_agent()
+        agent.add_user_message("hello")
+        agent.switch_mode("plan")
+        assert agent._plan_start_idx == 2  # system + user
+
+    def test_plan_start_idx_not_set_for_other_modes(self):
+        agent = _make_agent()
+        agent.switch_mode("ask")
+        assert agent._plan_start_idx is None
+        agent.switch_mode("build")
+        assert agent._plan_start_idx is None
+
+    def test_plan_start_idx_initialized_to_none(self):
+        agent = _make_agent()
+        assert agent._plan_start_idx is None
+
+
+class TestSummarizePlanContext:
+    async def test_replaces_plan_messages_with_summary(self):
+        agent = _make_agent()
+        agent.llm.generate = _mock_llm_generate("Plan: do X then Y")
+
+        agent.add_user_message("let's plan")
+        agent.switch_mode("plan")
+        # Simulate plan exploration (3+ messages)
+        agent.messages.append(Message(role="assistant", content="reading files..."))
+        agent.messages.append(Message(role="tool", content="file contents here"))
+        agent.messages.append(Message(role="assistant", content="here is the plan"))
+
+        msg_count_before = len(agent.messages)
+        await agent._summarize_plan_context()
+
+        # Plan messages replaced by single summary
+        assert len(agent.messages) < msg_count_before
+        last_msg = agent.messages[-1]
+        assert last_msg.role == "user"
+        assert "[Plan Summary]" in last_msg.content
+        assert "Plan: do X then Y" in last_msg.content
+
+    async def test_skips_when_too_few_messages(self):
+        agent = _make_agent()
+        agent.add_user_message("plan")
+        agent.switch_mode("plan")
+        # Only 2 messages (below threshold of 3)
+        agent.messages.append(Message(role="assistant", content="ok"))
+        agent.messages.append(Message(role="tool", content="result"))
+
+        msg_count_before = len(agent.messages)
+        await agent._summarize_plan_context()
+        assert len(agent.messages) == msg_count_before
+        assert agent._plan_start_idx is None  # reset even when skipped
+
+    async def test_skips_when_plan_start_idx_none(self):
+        agent = _make_agent()
+        agent.add_user_message("hello")
+        msg_count_before = len(agent.messages)
+        await agent._summarize_plan_context()
+        assert len(agent.messages) == msg_count_before
+
+    async def test_resets_token_bookkeeping(self):
+        agent = _make_agent()
+        agent.llm.generate = _mock_llm_generate("summary")
+        agent.api_total_tokens = 5000
+        agent._skip_next_token_check = True
+
+        agent.add_user_message("plan")
+        agent.switch_mode("plan")
+        for _ in range(3):
+            agent.messages.append(Message(role="assistant", content="stuff"))
+
+        await agent._summarize_plan_context()
+
+        assert agent.api_total_tokens == 0
+        assert agent._skip_next_token_check is False
+        assert agent._plan_start_idx is None
+
+    async def test_plan_to_build_triggers_via_tool(self):
+        """ModeSwitchTool plan→build triggers plan summarization."""
+        agent = _make_agent()
+        agent.llm.generate = _mock_llm_generate("compressed plan")
+
+        tool = ModeSwitchTool()
+        tool.set_context(agent)
+
+        # Enter plan mode and add exploration messages
+        await tool.execute(mode="plan")
+        agent.messages.append(Message(role="assistant", content="exploring..."))
+        agent.messages.append(Message(role="tool", content="data"))
+        agent.messages.append(Message(role="assistant", content="plan ready"))
+
+        result = await tool.execute(mode="build")
+        assert result.success
+        # Verify summary was injected
+        plan_summaries = [m for m in agent.messages if isinstance(m.content, str) and "[Plan Summary]" in m.content]
+        assert len(plan_summaries) == 1
+
+    async def test_ask_to_build_does_not_trigger(self):
+        """Switching ask→build should NOT trigger plan summarization."""
+        agent = _make_agent()
+        tool = ModeSwitchTool()
+        tool.set_context(agent)
+
+        await tool.execute(mode="ask")
+        agent.messages.append(Message(role="assistant", content="answer"))
+        agent.messages.append(Message(role="tool", content="data"))
+        agent.messages.append(Message(role="assistant", content="done"))
+
+        msg_count_before = len(agent.messages)
+        result = await tool.execute(mode="build")
+        assert result.success
+        # No summarization happened — message count only changes by tool result additions
+        plan_summaries = [m for m in agent.messages if isinstance(m.content, str) and "[Plan Summary]" in m.content]
+        assert len(plan_summaries) == 0

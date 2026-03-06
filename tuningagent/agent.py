@@ -44,6 +44,13 @@ class Colors:
     BRIGHT_WHITE = "\033[97m"
 
 
+PLAN_SUMMARY_PROMPT = """\
+Summarize the following plan-mode exploration into a structured plan.
+Preserve: goal, concrete steps, file paths discovered, key decisions, risks.
+Discard: raw file contents, intermediate reasoning, tool call details.
+Format as a concise action plan (under 500 words)."""
+
+
 class Agent:
     """Single agent with basic tools and MCP support."""
 
@@ -61,6 +68,7 @@ class Agent:
         self._all_tools: dict[str, Tool] = {tool.name: tool for tool in tools}
         self.tools: dict[str, Tool] = dict(self._all_tools)
         self.mode: str = "build"
+        self._plan_start_idx: int | None = None
         self.max_steps = max_steps
         self.token_limit = token_limit
         self.workspace_dir = Path(workspace_dir)
@@ -101,6 +109,8 @@ class Agent:
 
         old_mode = self.mode
         self.mode = new_mode
+        if new_mode == "plan":
+            self._plan_start_idx = len(self.messages)
         removed = self._apply_mode_filter()
         self._apply_mode_prompt()
 
@@ -329,12 +339,14 @@ class Agent:
         print(f"{Colors.DIM}  Structure: system + {len(user_indices)} user messages + {summary_count} summaries{Colors.RESET}")
         print(f"{Colors.DIM}  Note: API token count will update on next LLM call{Colors.RESET}")
 
-    async def _create_summary(self, messages: list[Message], round_num: int) -> str:
+    async def _create_summary(self, messages: list[Message], round_num: int, *, summary_prompt: str | None = None) -> str:
         """Create summary for one execution round
 
         Args:
             messages: List of messages to summarize
             round_num: Round number
+            summary_prompt: Optional custom prompt for the LLM summarization call.
+                            When None, the default agent-execution summary prompt is used.
 
         Returns:
             Summary text
@@ -357,7 +369,8 @@ class Agent:
 
         # Call LLM to generate concise summary
         try:
-            summary_prompt = f"""Please provide a concise summary of the following Agent execution process:
+            if summary_prompt is None:
+                summary_prompt = f"""Please provide a concise summary of the following Agent execution process:
 
 {summary_content}
 
@@ -367,6 +380,8 @@ Requirements:
 3. Be concise and clear, within 1000 words
 4. Use English
 5. Do not include "user" related content, only summarize the Agent's execution process"""
+            else:
+                summary_prompt = f"{summary_prompt}\n\n{summary_content}"
 
             summary_msg = Message(role="user", content=summary_prompt)
             response = await self.llm.generate(
@@ -387,6 +402,41 @@ Requirements:
             print(f"{Colors.BRIGHT_RED}✗ Summary generation failed for round {round_num}: {e}{Colors.RESET}")
             # Use simple text summary on failure
             return summary_content
+
+    async def _summarize_plan_context(self):
+        """Compress plan-mode exploration into a concise action plan.
+
+        Called when switching from plan → build. Replaces all messages from
+        ``_plan_start_idx`` onward with a single ``[Plan Summary]`` user message.
+        """
+        if self._plan_start_idx is None or self._plan_start_idx >= len(self.messages):
+            return
+
+        plan_messages = self.messages[self._plan_start_idx:]
+
+        # Skip if too few messages to warrant summarization
+        if len(plan_messages) < 3:
+            self._plan_start_idx = None
+            return
+
+        print(f"\n{Colors.BRIGHT_YELLOW}🔄 Summarizing plan context...{Colors.RESET}")
+
+        summary_text = await self._create_summary(
+            plan_messages, round_num=0, summary_prompt=PLAN_SUMMARY_PROMPT
+        )
+
+        if summary_text:
+            summary_message = Message(
+                role="user",
+                content=f"[Plan Summary]\n\n{summary_text}",
+            )
+            self.messages = self.messages[: self._plan_start_idx] + [summary_message]
+            print(f"{Colors.BRIGHT_GREEN}✓ Plan context compressed into summary{Colors.RESET}")
+
+        # Reset bookkeeping
+        self.api_total_tokens = 0
+        self._skip_next_token_check = False
+        self._plan_start_idx = None
 
     async def run(self, cancel_event: Optional[asyncio.Event] = None) -> str:
         """Execute agent loop until task is complete or max steps reached.

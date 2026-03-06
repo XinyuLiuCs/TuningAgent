@@ -943,10 +943,14 @@ async def run_agent(workspace_dir: Path):
                     if agent.mode == new_mode:
                         print(f"{Colors.YELLOW}Already in {new_mode.upper()} mode.{Colors.RESET}\n")
                     else:
+                        old_mode = agent.mode
                         result = agent.switch_mode(new_mode)
                         print(f"{Colors.GREEN}Switched to {result['new_mode'].upper()} mode ({result['tool_count']} tools available).{Colors.RESET}")
                         if result.get("removed"):
                             print(f"{Colors.DIM}  Disabled: {', '.join(result['removed'])}{Colors.RESET}")
+                        # Compress plan context when switching plan → build
+                        if old_mode == "plan" and new_mode == "build":
+                            await agent._summarize_plan_context()
                         print()
                     continue
 

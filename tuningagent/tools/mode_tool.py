@@ -32,7 +32,7 @@ Produce a structured plan with: **Goal**, **Steps**, **Dependencies**, and **Ris
 - Use `file_read`, `bash`, `skill_get`, and `subagent_run` to research before planning.
 - **Bash**: only execute read-only commands (ls, cat, grep, git log, find, etc.). Do NOT run commands that modify files, install packages, or change system state.
 - Do NOT attempt to use `file_write`, `file_edit`, `memory_update`, or `subagent_create` — they are not available in this mode.
-- When your plan is complete, suggest the user switch to `/build` to execute it.""",
+- When your plan is complete, present it to the user for review. The user may refine the plan through follow-up messages. When the user approves, switch to Build mode via `mode_switch(mode="build")` to begin execution.""",
 }
 
 
@@ -87,7 +87,12 @@ class ModeSwitchTool(Tool):
                 error=f"Invalid mode '{mode}'. Must be one of: {', '.join(VALID_MODES)}.",
             )
 
+        old_mode = self._agent.mode
         result = self._agent.switch_mode(mode)
+
+        # Compress plan context when switching plan → build
+        if old_mode == "plan" and mode == "build":
+            await self._agent._summarize_plan_context()
 
         summary = f"Switched to {mode.upper()} mode. Tools available: {result['tool_count']}."
         if result.get("removed"):
