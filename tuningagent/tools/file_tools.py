@@ -171,7 +171,7 @@ class WriteTool(Tool):
     def description(self) -> str:
         return (
             "Write content to a file. Will overwrite existing files completely. "
-            "For existing files, you should read the file first using file_read."
+            "For existing files, you should read the file first using file_read. "
             "Prefer editing existing files over creating new ones unless explicitly needed."
         )
 

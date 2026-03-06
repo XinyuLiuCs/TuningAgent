@@ -343,7 +343,7 @@ async def _execute_background(
             f"Background subagent started.\n"
             f"  subagent_id: {subagent_id}\n"
             f"  output: .subagent/{subagent_id}.md\n"
-            f"Use file_read to check the result."
+            f"Use file_read to check the result. "
             f"File absent = still running. File present = done."
         ),
     )
