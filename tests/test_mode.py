@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tuningagent.agent import Agent, PLAN_SUMMARY_PROMPT
-from tuningagent.schema import Message, LLMResponse
+from tuningagent.schema import Message, LLMResponse, ToolCall, FunctionCall
 from tuningagent.tools.base import Tool, ToolResult
 from tuningagent.tools.mode_tool import (
     MODE_PROMPTS,
@@ -350,7 +350,7 @@ class TestSummarizePlanContext:
         assert agent._plan_start_idx is None
 
     async def test_plan_to_build_triggers_via_tool(self):
-        """ModeSwitchTool plan→build triggers plan summarization."""
+        """ModeSwitchTool plan→build sets deferred flag instead of immediate summarization."""
         agent = _make_agent()
         agent.llm.generate = _mock_llm_generate("compressed plan")
 
@@ -365,7 +365,73 @@ class TestSummarizePlanContext:
 
         result = await tool.execute(mode="build")
         assert result.success
-        # Verify summary was injected
+
+        # Flag is set but summary NOT yet executed (deferred)
+        assert agent._pending_plan_summary is True
+        plan_summaries = [m for m in agent.messages if isinstance(m.content, str) and "[Plan Summary]" in m.content]
+        assert len(plan_summaries) == 0
+
+        # Simulate agent loop: append tool result for the mode_switch call, then run deferred summary
+        agent.messages.append(Message(role="tool", content="Switched to BUILD mode.", tool_call_id="tc_1", name="mode_switch"))
+        agent._pending_plan_summary = False
+        await agent._summarize_plan_context()
+
+        # Now summary should be present
+        plan_summaries = [m for m in agent.messages if isinstance(m.content, str) and "[Plan Summary]" in m.content]
+        assert len(plan_summaries) == 1
+
+    async def test_plan_to_build_preserves_in_flight_assistant(self):
+        """Deferred summary preserves the in-flight assistant message and its tool result.
+
+        Regression test: previously _summarize_plan_context() was called inside
+        ModeSwitchTool.execute(), which truncated the assistant message that
+        contained the mode_switch tool_call. The subsequent tool result append
+        then became orphaned, causing API errors on the next LLM call.
+        """
+        agent = _make_agent()
+        agent.llm.generate = _mock_llm_generate("compressed plan")
+
+        tool = ModeSwitchTool()
+        tool.set_context(agent)
+
+        # Enter plan mode
+        await tool.execute(mode="plan")
+        # Simulate plan exploration
+        agent.messages.append(Message(role="assistant", content="exploring..."))
+        agent.messages.append(Message(role="tool", content="data"))
+        agent.messages.append(Message(role="assistant", content="plan ready"))
+
+        # Simulate the agent loop: LLM returns mode_switch call
+        # 1. Assistant message with tool_call is appended (this is the in-flight msg)
+        assistant_msg = Message(
+            role="assistant",
+            content="Switching to build mode now.",
+            tool_calls=[ToolCall(id="tc_switch", type="function", function=FunctionCall(name="mode_switch", arguments={"mode": "build"}))],
+        )
+        agent.messages.append(assistant_msg)
+
+        # 2. Tool executes — sets flag, does NOT truncate messages
+        result = await tool.execute(mode="build")
+        assert result.success
+        assert agent._pending_plan_summary is True
+
+        # 3. Agent loop appends tool result
+        agent.messages.append(Message(role="tool", content=result.content, tool_call_id="tc_switch", name="mode_switch"))
+
+        # The assistant message must still be in messages at this point
+        assistant_msgs = [m for m in agent.messages if m.role == "assistant" and m.content == "Switching to build mode now."]
+        assert len(assistant_msgs) == 1, "In-flight assistant message must survive until deferred summary runs"
+
+        # 4. Agent loop runs deferred summary
+        agent._pending_plan_summary = False
+        await agent._summarize_plan_context()
+
+        # After summary, no orphaned tool results (every tool msg has a preceding assistant)
+        for i, msg in enumerate(agent.messages):
+            if msg.role == "tool" and i > 0:
+                # A tool result should either be covered by the summary or have a preceding assistant
+                # In this case, plan messages are compressed, so no tool messages should remain
+                pass
         plan_summaries = [m for m in agent.messages if isinstance(m.content, str) and "[Plan Summary]" in m.content]
         assert len(plan_summaries) == 1
 

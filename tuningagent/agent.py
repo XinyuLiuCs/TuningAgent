@@ -98,6 +98,8 @@ class Agent:
         self.api_total_tokens: int = 0
         # Flag to skip token check right after summary (avoid consecutive triggers)
         self._skip_next_token_check: bool = False
+        # Deferred plan summary flag (set by ModeSwitchTool, executed after tool results appended)
+        self._pending_plan_summary: bool = False
 
     def switch_mode(self, new_mode: str) -> dict:
         """Switch operating mode and update tool availability + system prompt.
@@ -634,6 +636,11 @@ Requirements:
                     print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {cancel_msg}{Colors.RESET}")
                     self.logger.end_turn(cancel_msg)
                     return cancel_msg
+
+            # After all tool results appended, handle deferred plan summary
+            if self._pending_plan_summary:
+                self._pending_plan_summary = False
+                await self._summarize_plan_context()
 
             step_elapsed = perf_counter() - step_start_time
             total_elapsed = perf_counter() - run_start_time

@@ -90,9 +90,9 @@ class ModeSwitchTool(Tool):
         old_mode = self._agent.mode
         result = self._agent.switch_mode(mode)
 
-        # Compress plan context when switching plan → build
+        # Defer plan context compression until after tool results are appended
         if old_mode == "plan" and mode == "build":
-            await self._agent._summarize_plan_context()
+            self._agent._pending_plan_summary = True
 
         summary = f"Switched to {mode.upper()} mode. Tools available: {result['tool_count']}."
         if result.get("removed"):
