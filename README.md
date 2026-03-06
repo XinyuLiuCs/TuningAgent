@@ -27,10 +27,17 @@ A **minimal viable** agent evaluation framework for research and learning:
 - Context debugging (`/context` exports messages + tool schemas, `/log` browses log files)
 
 ### 3. Tools & Skills
-- 10 built-in tools (bash + background process management, file read/write/edit, project memory, subagent tools)
+- 11 built-in tools (bash + background process management, file read/write/edit, project memory, subagent tools, mode switch)
 - 10 Claude Skills (hot-reload via `/reload`)
 
-### 4. Multi-Agent Delegation
+### 4. Agent Modes (Ask / Plan / Build)
+- **Build** (default): full execution, all tools available
+- **Ask**: read-only Q&A — write tools disabled, LLM focuses on answering questions
+- **Plan**: read-only planning — write tools disabled, LLM produces structured plans
+- Switch via CLI commands (`/ask`, `/plan`, `/build`) or LLM tool call (`mode_switch`)
+- Plan → Build compresses plan exploration into a concise summary to free context
+
+### 5. Multi-Agent Delegation
 - Fixed subagents: pre-defined via `SUBAGENT.yaml` (role, tools, limits)
 - Dynamic subagents: LLM creates ad-hoc subagents at runtime via `subagent_create`
 - Foreground mode (default): blocking with cancel_event transparency + timeout
@@ -68,9 +75,13 @@ When a background subagent is launched, the framework provides no explicit "poll
 
 The framework only signals "file doesn't exist = still running." The polling strategy is entirely emergent LLM behavior.
 
+### Agent Modes
+
+Rather than spawning a "planner" subagent, TuningAgent uses mode switching within the main agent. In **Plan** mode, write tools are removed and the system prompt instructs the LLM to produce a structured plan. When the user approves, switching to **Build** mode compresses the plan exploration into a summary (freeing context) and restores all tools. The LLM can also trigger this switch itself via `mode_switch(mode="build")`.
+
 ### Interaction Model
 
-Users interact only with the main agent. Pressing Esc cancels all agents (including background ones). Subagents are invisible to the user — this means future "planning" should be a mode switch within the main agent, not another subagent.
+Users interact only with the main agent. Pressing Esc cancels all agents (including background ones). Subagents are invisible to the user.
 
 ### Tool Naming — `{category}_{action}`
 
@@ -83,6 +94,7 @@ All tools follow a `{category}_{action}` naming convention:
 | `memory_` | `memory_update` | `memory_*` |
 | `skill_` | `skill_get` | `skill_*` |
 | `subagent_` | `subagent_run`, `subagent_create`, `subagent_cancel` | `subagent_*` |
+| `mode_` | `mode_switch` | `mode_*` |
 
 **Why prefix, not suffix?** Because the framework needs to mask (allow/deny) groups of tools at the LLM sampling stage. With a shared prefix, a single pattern like `file_*` selects an entire category — no enumeration required. This matters in three places:
 
@@ -165,6 +177,9 @@ default_model: "bedrock-claude"
 | `/health` | Check API connectivity for all models |
 | `/rewind [N]` | Roll back N conversation turns (default 1) |
 | `/context` | Export full message history and tool schemas |
+| `/ask` | Switch to Ask mode (read-only Q&A) |
+| `/plan` | Switch to Plan mode (read-only planning) |
+| `/build` | Switch to Build mode (full execution) |
 | `/reload` | Hot-reload skills from disk (SKILL.md changes) |
 | `/log` | Browse log files |
 | `/exit` | Exit program (also: `/quit`, `/q`) |
@@ -214,6 +229,7 @@ TuningAgent/
 │   │   ├── bash_tool.py
 │   │   ├── file_tools.py
 │   │   ├── memory_tool.py
+│   │   ├── mode_tool.py         # Agent mode switching (Ask/Plan/Build)
 │   │   ├── skill_tool.py
 │   │   ├── subagent_tool.py    # Subagent tools + SubagentManager
 │   │   └── subagent_loader.py  # SUBAGENT.yaml loader
@@ -247,7 +263,7 @@ TuningAgent/
 - [x] Dynamic subagent creation at runtime
 - [x] Foreground + background execution modes
 - [x] Execution control (cancel, timeout)
-- [ ] Agent modes (plan mode, etc.)
+- [x] Agent modes (Ask / Plan / Build) with plan context compression
 
 ### Phase 3: Tool Evaluation
 - [ ] Tool call statistics (count, success rate, duration)
