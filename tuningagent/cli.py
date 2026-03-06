@@ -25,6 +25,7 @@ from tuningagent.tools.bash_tool import BashKillTool, BashOutputTool, BashTool
 from tuningagent.tools.file_tools import EditTool, ReadTool, WriteTool
 from tuningagent.tools.memory_tool import MemoryTool
 from tuningagent.tools.skill_tool import create_skill_tools
+from tuningagent.tools.mode_tool import ModeSwitchTool
 from tuningagent.tools.subagent_tool import create_subagent_tools, RunSubagentTool, SubagentManager
 from tuningagent.utils import calculate_display_width
 
@@ -256,6 +257,9 @@ def print_help():
   {Colors.BRIGHT_GREEN}/log <file>{Colors.RESET}    - Read a specific log file
   {Colors.BRIGHT_GREEN}/tools{Colors.RESET}         - Show registered tools by category
   {Colors.BRIGHT_GREEN}/reload{Colors.RESET}        - Reload skills and subagents from disk
+  {Colors.BRIGHT_GREEN}/ask{Colors.RESET}           - Switch to Ask mode (read-only Q&A)
+  {Colors.BRIGHT_GREEN}/plan{Colors.RESET}          - Switch to Plan mode (read-only planning)
+  {Colors.BRIGHT_GREEN}/build{Colors.RESET}         - Switch to Build mode (full execution)
   {Colors.BRIGHT_GREEN}/exit{Colors.RESET}          - Exit program (also: exit, quit, q)
 
 {Colors.BOLD}{Colors.BRIGHT_YELLOW}Keyboard Shortcuts:{Colors.RESET}
@@ -694,6 +698,12 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
             if hasattr(t, "set_context"):
                 t.set_context(model_pool, tools, workspace_dir=str(workspace_dir), parent_agent=agent)
 
+    # 7c. Register mode_switch tool
+    mode_tool = ModeSwitchTool()
+    mode_tool.set_context(agent)
+    agent._all_tools[mode_tool.name] = mode_tool
+    agent.tools[mode_tool.name] = mode_tool
+
     # 8. Display welcome information
     print_banner()
     pool_label = f"{model_pool.active_alias} ({model_pool.model})" if len(models_info) > 1 else model_pool.model
@@ -708,7 +718,7 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
     # 9. Setup prompt_toolkit session
     # Command completer
     command_completer = WordCompleter(
-        ["/help", "/clear", "/rewind", "/history", "/stats", "/health", "/model", "/model-stats", "/context", "/log", "/tools", "/reload", "/exit", "/quit", "/q"],
+        ["/help", "/clear", "/rewind", "/history", "/stats", "/health", "/model", "/model-stats", "/context", "/log", "/tools", "/reload", "/ask", "/plan", "/build", "/exit", "/quit", "/q"],
         ignore_case=True,
         sentence=True,
     )
@@ -760,9 +770,10 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
     while True:
         try:
             # Get user input using prompt_toolkit
+            mode_suffix = f" [{agent.mode.upper()}]" if agent.mode != "build" else ""
             user_input = await session.prompt_async(
                 [
-                    ("class:prompt", "You"),
+                    ("class:prompt", f"You{mode_suffix}"),
                     ("", " › "),
                 ],
                 multiline=False,
@@ -907,6 +918,7 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
                         "Memory": [],
                         "Skills": [],
                         "Subagents": [],
+                        "Mode": [],
                         "Other": [],
                     }
                     for t in agent.tools.values():
@@ -920,6 +932,8 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
                             categories["Skills"].append(t)
                         elif isinstance(t, (RunSubagentTool, CreateSubagentTool, SubagentCancelTool)):
                             categories["Subagents"].append(t)
+                        elif isinstance(t, ModeSwitchTool):
+                            categories["Mode"].append(t)
                         else:
                             categories["Other"].append(t)
 
@@ -931,6 +945,22 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
                         for t in cat_tools:
                             print(f"    {Colors.BRIGHT_WHITE}{t.name}{Colors.RESET}: {Colors.DIM}{t.description[:80]}{Colors.RESET}")
                     print()
+                    continue
+
+                elif command in ["/ask", "/plan", "/build"]:
+                    new_mode = command[1:]
+                    if agent.mode == new_mode:
+                        print(f"{Colors.YELLOW}Already in {new_mode.upper()} mode.{Colors.RESET}\n")
+                    else:
+                        old_mode = agent.mode
+                        result = agent.switch_mode(new_mode)
+                        print(f"{Colors.GREEN}Switched to {result['new_mode'].upper()} mode ({result['tool_count']} tools available).{Colors.RESET}")
+                        if result.get("removed"):
+                            print(f"{Colors.DIM}  Disabled: {', '.join(result['removed'])}{Colors.RESET}")
+                        # Compress plan context when switching plan → build
+                        if old_mode == "plan" and new_mode == "build":
+                            await agent._summarize_plan_context()
+                        print()
                     continue
 
                 elif command == "/reload":
@@ -1074,6 +1104,10 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
                 esc_listener_stop.set()
                 if esc_thread is not None:
                     esc_thread.join(timeout=0.2)
+
+            # Plan mode hint
+            if agent.mode == "plan":
+                print(f"{Colors.DIM}Tip: Use /build to switch to Build mode and execute the plan.{Colors.RESET}")
 
             # Visual separation
             print(f"\n{Colors.DIM}{'─' * 60}{Colors.RESET}\n")

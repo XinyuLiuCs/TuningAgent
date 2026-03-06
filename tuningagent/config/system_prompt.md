@@ -81,5 +81,8 @@ Persistent memory loaded from `AGENT.md` at startup. Call `memory_update` (full 
 
 {AGENT_MEMORY}
 
+## Current Mode
+(replaced at runtime by agent mode system)
+
 ## Workspace Context
 You are working in a workspace directory. All operations are relative to this context unless absolute paths are specified.

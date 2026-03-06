@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from time import perf_counter
 from typing import Optional
@@ -12,6 +13,7 @@ from .llm import LLMClient
 from .logger import AgentLogger
 from .schema import Message
 from .tools.base import Tool, ToolResult
+from .tools.mode_tool import MODE_PROMPTS, VALID_MODES, WRITE_TOOLS
 from .utils import calculate_display_width
 
 
@@ -42,6 +44,13 @@ class Colors:
     BRIGHT_WHITE = "\033[97m"
 
 
+PLAN_SUMMARY_PROMPT = """\
+Summarize the following plan-mode exploration into a structured plan.
+Preserve: goal, concrete steps, file paths discovered, key decisions, risks.
+Discard: raw file contents, intermediate reasoning, tool call details.
+Format as a concise action plan (under 500 words)."""
+
+
 class Agent:
     """Single agent with basic tools and MCP support."""
 
@@ -56,7 +65,10 @@ class Agent:
         logger: Optional[AgentLogger] = None,
     ):
         self.llm = llm_client
-        self.tools = {tool.name: tool for tool in tools}
+        self._all_tools: dict[str, Tool] = {tool.name: tool for tool in tools}
+        self.tools: dict[str, Tool] = dict(self._all_tools)
+        self.mode: str = "build"
+        self._plan_start_idx: int | None = None
         self.max_steps = max_steps
         self.token_limit = token_limit
         self.workspace_dir = Path(workspace_dir)
@@ -79,10 +91,79 @@ class Agent:
         # Initialize logger (use provided logger or create a new one)
         self.logger = logger if logger is not None else AgentLogger()
 
+        # Inject initial mode prompt into system message
+        self._apply_mode_prompt()
+
         # Token usage from last API response (updated after each LLM call)
         self.api_total_tokens: int = 0
         # Flag to skip token check right after summary (avoid consecutive triggers)
         self._skip_next_token_check: bool = False
+        # Deferred plan summary flag (set by ModeSwitchTool, executed after tool results appended)
+        self._pending_plan_summary: bool = False
+
+    def switch_mode(self, new_mode: str) -> dict:
+        """Switch operating mode and update tool availability + system prompt.
+
+        Returns metadata dict with mode info for the caller to display.
+        """
+        if new_mode not in VALID_MODES:
+            return {"error": f"Invalid mode '{new_mode}'. Must be one of: {', '.join(VALID_MODES)}"}
+
+        old_mode = self.mode
+        self.mode = new_mode
+        if new_mode == "plan":
+            self._plan_start_idx = len(self.messages)
+        removed = self._apply_mode_filter()
+        self._apply_mode_prompt()
+
+        return {
+            "old_mode": old_mode,
+            "new_mode": new_mode,
+            "tool_count": len(self.tools),
+            "removed": removed,
+        }
+
+    def _apply_mode_filter(self) -> list[str]:
+        """Rebuild self.tools from _all_tools based on current mode.
+
+        Returns list of tool names that were removed (empty for build mode).
+        """
+        if self.mode == "build":
+            self.tools = dict(self._all_tools)
+            return []
+
+        # Ask/Plan: remove write tools
+        removed = []
+        self.tools = {}
+        for name, tool in self._all_tools.items():
+            if name in WRITE_TOOLS:
+                removed.append(name)
+            else:
+                self.tools[name] = tool
+        return removed
+
+    def _apply_mode_prompt(self):
+        """Inject or replace the ## Current Mode section in the system prompt."""
+        new_section = MODE_PROMPTS[self.mode]
+        sys_content = self.messages[0].content
+
+        # Try to replace existing section
+        pattern = r"## Current Mode\n.*?(?=\n## |\Z)"
+        replaced, count = re.subn(pattern, new_section, sys_content, count=1, flags=re.DOTALL)
+
+        if count > 0:
+            sys_content = replaced
+        else:
+            # Insert before ## Workspace Context (or ## Current Workspace), or append
+            insert_pattern = r"(\n## (?:Workspace Context|Current Workspace))"
+            match = re.search(insert_pattern, sys_content)
+            if match:
+                sys_content = sys_content[: match.start()] + "\n\n" + new_section + sys_content[match.start() :]
+            else:
+                sys_content = sys_content + "\n\n" + new_section
+
+        self.messages[0] = Message(role="system", content=sys_content)
+        self.system_prompt = sys_content
 
     def add_user_message(self, content: str):
         """Add a user message to history."""
@@ -260,12 +341,14 @@ class Agent:
         print(f"{Colors.DIM}  Structure: system + {len(user_indices)} user messages + {summary_count} summaries{Colors.RESET}")
         print(f"{Colors.DIM}  Note: API token count will update on next LLM call{Colors.RESET}")
 
-    async def _create_summary(self, messages: list[Message], round_num: int) -> str:
+    async def _create_summary(self, messages: list[Message], round_num: int, *, summary_prompt: str | None = None) -> str:
         """Create summary for one execution round
 
         Args:
             messages: List of messages to summarize
             round_num: Round number
+            summary_prompt: Optional custom prompt for the LLM summarization call.
+                            When None, the default agent-execution summary prompt is used.
 
         Returns:
             Summary text
@@ -288,7 +371,8 @@ class Agent:
 
         # Call LLM to generate concise summary
         try:
-            summary_prompt = f"""Please provide a concise summary of the following Agent execution process:
+            if summary_prompt is None:
+                summary_prompt = f"""Please provide a concise summary of the following Agent execution process:
 
 {summary_content}
 
@@ -298,6 +382,8 @@ Requirements:
 3. Be concise and clear, within 1000 words
 4. Use English
 5. Do not include "user" related content, only summarize the Agent's execution process"""
+            else:
+                summary_prompt = f"{summary_prompt}\n\n{summary_content}"
 
             summary_msg = Message(role="user", content=summary_prompt)
             response = await self.llm.generate(
@@ -318,6 +404,41 @@ Requirements:
             print(f"{Colors.BRIGHT_RED}✗ Summary generation failed for round {round_num}: {e}{Colors.RESET}")
             # Use simple text summary on failure
             return summary_content
+
+    async def _summarize_plan_context(self):
+        """Compress plan-mode exploration into a concise action plan.
+
+        Called when switching from plan → build. Replaces all messages from
+        ``_plan_start_idx`` onward with a single ``[Plan Summary]`` user message.
+        """
+        if self._plan_start_idx is None or self._plan_start_idx >= len(self.messages):
+            return
+
+        plan_messages = self.messages[self._plan_start_idx:]
+
+        # Skip if too few messages to warrant summarization
+        if len(plan_messages) < 3:
+            self._plan_start_idx = None
+            return
+
+        print(f"\n{Colors.BRIGHT_YELLOW}🔄 Summarizing plan context...{Colors.RESET}")
+
+        summary_text = await self._create_summary(
+            plan_messages, round_num=0, summary_prompt=PLAN_SUMMARY_PROMPT
+        )
+
+        if summary_text:
+            summary_message = Message(
+                role="user",
+                content=f"[Plan Summary]\n\n{summary_text}",
+            )
+            self.messages = self.messages[: self._plan_start_idx] + [summary_message]
+            print(f"{Colors.BRIGHT_GREEN}✓ Plan context compressed into summary{Colors.RESET}")
+
+        # Reset bookkeeping
+        self.api_total_tokens = 0
+        self._skip_next_token_check = False
+        self._plan_start_idx = None
 
     async def run(self, cancel_event: Optional[asyncio.Event] = None) -> str:
         """Execute agent loop until task is complete or max steps reached.
@@ -515,6 +636,11 @@ Requirements:
                     print(f"\n{Colors.BRIGHT_YELLOW}⚠️  {cancel_msg}{Colors.RESET}")
                     self.logger.end_turn(cancel_msg)
                     return cancel_msg
+
+            # After all tool results appended, handle deferred plan summary
+            if self._pending_plan_summary:
+                self._pending_plan_summary = False
+                await self._summarize_plan_context()
 
             step_elapsed = perf_counter() - step_start_time
             total_elapsed = perf_counter() - run_start_time
