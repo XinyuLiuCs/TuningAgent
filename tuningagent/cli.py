@@ -162,10 +162,20 @@ def read_log_file(filename: str) -> None:
     """Read and display a specific log file.
 
     Args:
-        filename: The log filename to read
+        filename: The log filename to read (bare name or session_id/name)
     """
     log_dir = get_log_directory()
     log_file = log_dir / filename
+
+    # If not found at top level, search session subdirectories
+    if not log_file.exists() or not log_file.is_file():
+        bare = Path(filename).name
+        for session_dir in sorted(log_dir.iterdir(), reverse=True):
+            if session_dir.is_dir():
+                candidate = session_dir / bare
+                if candidate.exists():
+                    log_file = candidate
+                    break
 
     if not log_file.exists() or not log_file.is_file():
         print(f"\n{Colors.RED}❌ Log file not found: {log_file}{Colors.RESET}\n")
@@ -1059,6 +1069,7 @@ async def run_agent(workspace_dir: Path):
         except KeyboardInterrupt:
             print(f"\n\n{Colors.BRIGHT_YELLOW}👋 Interrupt signal detected, exiting...{Colors.RESET}\n")
             print_stats(agent, session_start, model_pool)
+            agent.logger.end_session()
             break
 
         except Exception as e:
@@ -1067,6 +1078,7 @@ async def run_agent(workspace_dir: Path):
 
     # 11. Cleanup
     try:
+        agent.logger.end_session()
         print(f"{Colors.GREEN}✅ Agent stopped{Colors.RESET}\n")
     except Exception as e:
         print(f"{Colors.YELLOW}Error during cleanup (can be ignored): {e}{Colors.RESET}\n")

@@ -126,6 +126,10 @@ class AgentLogger:
 
         self._write_event("tool_result", tool_result_data)
 
+    def end_session(self):
+        """Emit session_end event."""
+        self._write_event("session_end", {})
+
     def log_rewind(self, from_turn: int, to_turn: int):
         """Emit a rewind event marking a timeline fork."""
         self._write_event("rewind", {"from_turn": from_turn, "to_turn": to_turn})
