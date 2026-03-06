@@ -156,7 +156,7 @@ class SkillLoader:
             abs_path = skill_dir / filename
             if abs_path.exists():
                 # Add helpful instruction for Agent
-                return f"{prefix}`{abs_path}` (use read_file to access){suffix}"
+                return f"{prefix}`{abs_path}` (use file_read to access){suffix}"
             return match.group(0)
 
         # Match patterns like: "see reference.md" or "read forms.md"
@@ -179,7 +179,7 @@ class SkillLoader:
             abs_path = skill_dir / clean_path
             if abs_path.exists():
                 # Preserve the link text style (with or without backticks)
-                return f"{prefix}[{link_text}](`{abs_path}`) (use read_file to access)"
+                return f"{prefix}[{link_text}](`{abs_path}`) (use file_read to access)"
             return match.group(0)
 
         # Match markdown link patterns with optional prefix words

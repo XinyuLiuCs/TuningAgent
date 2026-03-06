@@ -22,8 +22,8 @@ from .base import Tool, ToolResult
 from .subagent_loader import SubagentConfig, SubagentLoader
 
 # Sentinel names used to filter subagent tools from child agents
-RUN_SUBAGENT_TOOL_NAME = "run_subagent"
-CREATE_SUBAGENT_TOOL_NAME = "create_subagent"
+RUN_SUBAGENT_TOOL_NAME = "subagent_run"
+CREATE_SUBAGENT_TOOL_NAME = "subagent_create"
 SUBAGENT_CANCEL_TOOL_NAME = "subagent_cancel"
 
 # Default timeout for foreground subagent execution (seconds)
@@ -194,7 +194,7 @@ async def _background_wrapper(
             output_path.write_text(
                 f"Subagent {subagent_id} ended without writing result.\n"
                 "This may indicate cancellation or the subagent "
-                "forgot to use write_file."
+                "forgot to use file_write."
             )
         SubagentManager.cleanup(subagent_id)
 
@@ -305,8 +305,8 @@ async def _execute_background(
     # Augment prompt and tools for background mode
     if allowed_tools is not None:
         augmented_tools = list(allowed_tools)
-        if "write_file" not in augmented_tools:
-            augmented_tools.append("write_file")
+        if "file_write" not in augmented_tools:
+            augmented_tools.append("file_write")
     else:
         augmented_tools = allowed_tools
 
@@ -314,7 +314,7 @@ async def _execute_background(
         system_prompt
         + f"\n\n## Output\n"
         f"You are running as a background subagent. You MUST write your complete "
-        f"final result to: .subagent/{subagent_id}.md using write_file before finishing.\n"
+        f"final result to: .subagent/{subagent_id}.md using file_write before finishing.\n"
         f"This is the ONLY file you are allowed to write — all other read-only constraints still apply."
     )
 
@@ -343,7 +343,7 @@ async def _execute_background(
             f"Background subagent started.\n"
             f"  subagent_id: {subagent_id}\n"
             f"  output: .subagent/{subagent_id}.md\n"
-            f"Use read_file to check the result. "
+            f"Use file_read to check the result. "
             f"File absent = still running. File present = done."
         ),
     )

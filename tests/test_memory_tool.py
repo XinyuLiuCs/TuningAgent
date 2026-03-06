@@ -44,7 +44,7 @@ async def test_char_count_in_response():
 async def test_schema():
     """Tool schema has the expected shape."""
     tool = MemoryTool()
-    assert tool.name == "update_memory"
+    assert tool.name == "memory_update"
     params = tool.parameters
     assert "content" in params["properties"]
     assert params["required"] == ["content"]

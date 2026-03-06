@@ -2,7 +2,7 @@
 
 # TuningAgent
 
-> 可评估/调试的通用 Coding Agent 框架
+> 可评估/调试的通用 Coding Agent
 
 基于 [Mini-Agent](https://github.com/MiniMax-AI/Mini-Agent) 开发的 Agent 评估系统，专注于模型、上下文和工具的系统化评估。
 
@@ -11,66 +11,80 @@
 TuningAgent 是一个用于学习研究的 **最小可行的** Agent 评估框架，用于：
 - 对比不同 LLM 模型在实际任务中的表现
 - 追踪和回溯 Agent 的执行过程
-- 评估工具和 Skills 的有效性
+- 评估工具、 Skills 和 MultiAgent 的有效性
 
 ## 核心能力
 
 ### 1. 模型评估
 - 配置文件切换不同 LLM（Anthropic/OpenAI/AWS Bedrock）
-- 模型池管理（单配置文件支持多模型，运行时热切换）
+- 模型池管理（配置文件支持多模型，运行时热切换）
 - 按模型记录执行统计（token、延迟、错误）
 - 健康检查（启动时并行探测 API 连通性，`/health` 按需触发）
 
 ### 2. 上下文追踪
 - 结构化 JSONL 日志（Session/Turn/Step 层级，完整记录消息、工具调用及结果）
-- 对话回退（`/rewind`，turn 级截断后可换模型/改措辞重试）
+- 对话回退（`/rewind`，turn 级截断后可换模型/工具/改措辞重试）
 - 上下文调试（`/context` 导出完整消息上下文及工具 schema，`/log` 查看日志文件）
 
 ### 3. 工具与 Skills
-- 10 个基础工具（Bash + 后台进程管理、文件读写编辑、项目记忆、子 Agent 工具）
+- 10 个基础工具（Bash + 后台进程管理、文件读写编辑、项目记忆、Subagent 工具）
 - 10 个 Claude Skills（支持 `/reload` 热重载）
 
-### 4. 多 Agent 委托
-- 固定子 Agent：通过 `SUBAGENT.yaml` 预定义（角色、工具、限制）
-- 动态子 Agent：LLM 在运行时通过 `create_subagent` 按需创建
-- 前台模式（默认）：阻塞执行，支持 cancel_event 透传 + 超时控制
-- 后台模式：非阻塞执行，结果写入 `.subagent/{id}.md`，主 Agent 通过 `read_file` 轮询
-- 执行控制：Esc 取消所有 Agent（含后台），支持通过 `subagent_cancel` 单独取消
+### 4. MultiAgent 委托
+- 固定 Subagent：通过 `SUBAGENT.yaml` 预定义（角色、工具、权限）
+- 动态 Subagent：LLM 在运行时通过 `subagent_create` 按需创建
+- 前台模式（默认）：阻塞执行，支持 cancel_event 透传和超时控制
+- 后台模式：非阻塞执行，结果写入 `.subagent/{id}.md`，主 Agent 通过 `file_read` 轮询
+- 执行控制：Esc 取消所有 Agent，支持通过 `subagent_cancel` 单独取消
 
 ## 设计理念
 
-### ReAct Agent 循环
+### ReAct 循环
 
-核心循环遵循 ReAct（推理 + 行动）模式：LLM 生成响应，框架检查是否包含工具调用——有则执行工具并将结果反馈给 LLM 继续循环；没有则本轮结束。循环持续直到 LLM 给出最终文本回答或达到 `max_steps` 上限。
+核心是 ReAct（推理 + 行动）循环：LLM 生成响应 → 框架检查工具调用 → 有则执行并回传结果，无则结束。如此反复，直到 LLM 给出最终回答或达到 `max_steps` 上限。
 
-### 多 Agent 架构
+### MultiAgent 委托
 
-子 Agent 将单 Agent 循环扩展为委托模型：
+主 Agent 可以把任务委托给 Subagent，每个 Subagent 独立运行自己的 ReAct 循环：
 
-- **固定子 Agent**：在 `SUBAGENT.yaml` 中声明（角色、允许的工具、token 限制），启动时注册——适合代码探索等常用角色。
-- **动态子 Agent**：LLM 在运行时通过 `create_subagent` 按需创建，自行指定角色和工具。
-- **前台模式**（默认）：主 Agent 阻塞等待子 Agent 完成，支持超时和 cancel_event 透传。
-- **后台模式**：子 Agent 异步运行，结果写入 `.subagent/{id}.md`；主 Agent 继续工作，准备好时读取文件获取结果。
-- **单层委托**：子 Agent 不能再创建子 Agent——保持架构扁平、易于调试。
+- **固定 Subagent**：通过 `SUBAGENT.yaml` 预定义角色、工具白名单和 token 限制，启动时加载。
+- **动态 Subagent**：LLM 运行时通过 `subagent_create` 按需创建，自行指定角色和工具。
+- **前台执行**（默认）：主 Agent 阻塞等待，支持超时和取消信号透传。
+- **后台执行**：Subagent 异步运行，完成后将结果写入 `.subagent/{id}.md`，主 Agent 按需读取。
+- **单层约束**：Subagent 不能再创建 Subagent，保持架构扁平、便于调试。
 
-### 后台执行——涌现行为
+### 涌现行为
 
-后台子 Agent 启动后，框架没有给主 Agent 任何关于"轮询"的指令，但它自发产生了等待-检查的行为：
+后台 Subagent 启动后，框架不会主动提示"去轮询结果"，但 LLM 自发产生了等待-检查策略：
 
 ```
-→ subagent_code-explorer(task)    → "后台子 Agent 已启动..."
+→ subagent_code-explorer(task)    → "后台 Subagent 已启动..."
 → bash("sleep 15 && test -f .subagent/xxx.md && echo DONE || echo STILL RUNNING")
 → "STILL RUNNING"
 → bash("sleep 20 && test -f ...")  → "STILL RUNNING"
 → bash("sleep 30 && test -f ...")  → "DONE"
-→ read_file(".subagent/xxx.md")    → 读到完整结果
+→ file_read(".subagent/xxx.md")    → 读到完整结果
 ```
 
-框架只提供了"文件不存在 = 还在跑"的信号，轮询策略完全是 LLM 自己的涌现行为。
+框架只暴露了一个隐含信号：文件不存在 = 仍在运行。轮询间隔、重试次数等策略完全由 LLM 自主决定。
 
 ### 交互模型
 
-用户只与主 Agent 对话。按 Esc 取消所有 Agent（含后台）。子 Agent 对用户不可见——这意味着未来的"规划模式"应该是主 Agent 的模式切换，而非另一个子 Agent。
+用户只与主 Agent 对话，Subagent 对用户透明。按 Esc 可取消所有 Agent（含后台）。因此，未来的"规划模式"应作为主 Agent 的内部状态切换，而非独立的 Subagent。
+
+### 工具命名 — `{category}_{action}`
+
+所有工具采用 `{类别}_{动作}` 的前缀命名规范：
+
+| 前缀 | 工具 | 匹配模式 |
+|-------|------|---------|
+| `bash_` | `bash`, `bash_output`, `bash_kill` | `bash*` |
+| `file_` | `file_read`, `file_write`, `file_edit` | `file_*` |
+| `memory_` | `memory_update` | `memory_*` |
+| `skill_` | `skill_get` | `skill_*` |
+| `subagent_` | `subagent_run`, `subagent_create`, `subagent_cancel` | `subagent_*` |
+
+**为什么用前缀？** 框架需要在 LLM 采样阶段按类别 mask 工具（允许/禁用）。统一前缀后，`file_*` 一条规则即可选中整个类别，无需逐个枚举。新增工具只要遵循前缀，自动归入对应分组。
 
 ## 快速开始
 
@@ -200,12 +214,12 @@ TuningAgent/
 │   │   ├── file_tools.py
 │   │   ├── memory_tool.py
 │   │   ├── skill_tool.py
-│   │   ├── subagent_tool.py    # 子 Agent 工具 + SubagentManager
+│   │   ├── subagent_tool.py    # Subagent 工具 + SubagentManager
 │   │   └── subagent_loader.py  # SUBAGENT.yaml 加载器
 │   ├── skills/               # Claude Skills（10）
 │   ├── schema/               # 数据结构定义
 │   ├── config/               # 配置文件
-│   │   ├── subagents/          # 固定子 Agent 定义（SUBAGENT.yaml）
+│   │   ├── subagents/          # 固定 Subagent 定义（SUBAGENT.yaml）
 │   └── cli.py                # 命令行入口
 ├── tests/                    # 测试用例
 └── pyproject.toml
@@ -227,9 +241,9 @@ TuningAgent/
 - [ ] 简单的执行可视化（步骤、token、工具调用）
 - [ ] 失败案例自动归档
 
-### Phase 2.5: 多 Agent 委托 ✅
-- [x] 固定子 Agent（SUBAGENT.yaml）
-- [x] 运行时动态创建子 Agent
+### Phase 2.5: MultiAgent 委托 ✅
+- [x] 固定 Subagent（SUBAGENT.yaml）
+- [x] 运行时动态创建 Subagent
 - [x] 前台 + 后台执行模式
 - [x] 执行控制（取消、超时）
 - [ ] Agent 模式（规划模式等）

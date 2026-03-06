@@ -73,7 +73,7 @@ class ReadTool(Tool):
 
     @property
     def name(self) -> str:
-        return "read_file"
+        return "file_read"
 
     @property
     def description(self) -> str:
@@ -165,13 +165,13 @@ class WriteTool(Tool):
 
     @property
     def name(self) -> str:
-        return "write_file"
+        return "file_write"
 
     @property
     def description(self) -> str:
         return (
             "Write content to a file. Will overwrite existing files completely. "
-            "For existing files, you should read the file first using read_file. "
+            "For existing files, you should read the file first using file_read. "
             "Prefer editing existing files over creating new ones unless explicitly needed."
         )
 
@@ -222,7 +222,7 @@ class EditTool(Tool):
 
     @property
     def name(self) -> str:
-        return "edit_file"
+        return "file_edit"
 
     @property
     def description(self) -> str:

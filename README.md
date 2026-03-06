@@ -32,9 +32,9 @@ A **minimal viable** agent evaluation framework for research and learning:
 
 ### 4. Multi-Agent Delegation
 - Fixed subagents: pre-defined via `SUBAGENT.yaml` (role, tools, limits)
-- Dynamic subagents: LLM creates ad-hoc subagents at runtime via `create_subagent`
+- Dynamic subagents: LLM creates ad-hoc subagents at runtime via `subagent_create`
 - Foreground mode (default): blocking with cancel_event transparency + timeout
-- Background mode: non-blocking, result written to `.subagent/{id}.md`, main agent polls via `read_file`
+- Background mode: non-blocking, result written to `.subagent/{id}.md`, main agent polls via `file_read`
 - Execution control: Esc cancels all (foreground + background), per-subagent cancel via `subagent_cancel`
 
 ## Design Philosophy
@@ -48,7 +48,7 @@ The core loop follows a simple ReAct (Reason + Act) pattern: the LLM generates a
 Subagents extend the single-agent loop into a delegation model:
 
 - **Fixed subagents** are declared in `SUBAGENT.yaml` files (role, allowed tools, token limits) and registered at startup — ideal for recurring roles like code exploration.
-- **Dynamic subagents** are created by the LLM at runtime via `create_subagent`, specifying role and tools on the fly.
+- **Dynamic subagents** are created by the LLM at runtime via `subagent_create`, specifying role and tools on the fly.
 - **Foreground** (default): the main agent blocks until the subagent finishes. Supports timeout and cancel_event propagation.
 - **Background**: the subagent runs asynchronously. Its result is written to `.subagent/{id}.md`; the main agent continues working and reads the file when ready.
 - **Single-layer delegation**: subagents cannot spawn further subagents — this keeps the architecture flat and debuggable.
@@ -63,7 +63,7 @@ When a background subagent is launched, the framework provides no explicit "poll
 → "STILL RUNNING"
 → bash("sleep 20 && test -f ...")  → "STILL RUNNING"
 → bash("sleep 30 && test -f ...")  → "DONE"
-→ read_file(".subagent/xxx.md")    → full result
+→ file_read(".subagent/xxx.md")    → full result
 ```
 
 The framework only signals "file doesn't exist = still running." The polling strategy is entirely emergent LLM behavior.
@@ -71,6 +71,24 @@ The framework only signals "file doesn't exist = still running." The polling str
 ### Interaction Model
 
 Users interact only with the main agent. Pressing Esc cancels all agents (including background ones). Subagents are invisible to the user — this means future "planning" should be a mode switch within the main agent, not another subagent.
+
+### Tool Naming — `{category}_{action}`
+
+All tools follow a `{category}_{action}` naming convention:
+
+| Prefix | Tools | Mask pattern |
+|--------|-------|-------------|
+| `bash_` | `bash`, `bash_output`, `bash_kill` | `bash*` |
+| `file_` | `file_read`, `file_write`, `file_edit` | `file_*` |
+| `memory_` | `memory_update` | `memory_*` |
+| `skill_` | `skill_get` | `skill_*` |
+| `subagent_` | `subagent_run`, `subagent_create`, `subagent_cancel` | `subagent_*` |
+
+**Why prefix, not suffix?** Because the framework needs to mask (allow/deny) groups of tools at the LLM sampling stage. With a shared prefix, a single pattern like `file_*` selects an entire category — no enumeration required. This matters in three places:
+
+1. **Subagent `allowed_tools`** — a read-only explorer subagent gets `["file_read", "bash"]`; prefix grouping makes these whitelists scannable and less error-prone.
+2. **Sampling-stage masking** — when evaluating models, we may want to disable all file-write tools or all subagent tools in a single rule. Prefix-based filtering turns this into a trivial glob match.
+3. **Future tool policies** — as the tool set grows, category prefixes keep the namespace flat and self-documenting. A new `file_search` tool automatically belongs to the `file_*` group with zero config.
 
 ## Quick Start
 

@@ -88,7 +88,7 @@ class SubagentLoader:
         if not self.loaded:
             return ""
         parts = ["## Available Subagents\n"]
-        parts.append("Use `run_subagent(name, task)` to delegate tasks to a specialized subagent.\n")
+        parts.append("Use `subagent_run(name, task)` to delegate tasks to a specialized subagent.\n")
         for cfg in self.loaded.values():
             mode = " [background]" if cfg.run_in_background else ""
             parts.append(f"- `{cfg.name}`{mode}: {cfg.description}")

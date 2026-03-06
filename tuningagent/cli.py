@@ -427,7 +427,7 @@ async def initialize_base_tools(config: Config):
             skill_tools, skill_loader = create_skill_tools(skills_dir)
             if skill_tools:
                 tools.extend(skill_tools)
-                print(f"{Colors.GREEN}✅ Loaded Skill tool (get_skill){Colors.RESET}")
+                print(f"{Colors.GREEN}✅ Loaded Skill tool (skill_get){Colors.RESET}")
             else:
                 print(f"{Colors.YELLOW}⚠️  No available Skills found{Colors.RESET}")
         except Exception as e:
@@ -455,7 +455,7 @@ async def initialize_base_tools(config: Config):
             if subagent_tools:
                 tools.extend(subagent_tools)
                 fixed_count = len(subagent_loader.loaded) if subagent_loader else 0
-                print(f"{Colors.GREEN}✅ Loaded {fixed_count} fixed subagent(s) + run_subagent/create_subagent tools{Colors.RESET}")
+                print(f"{Colors.GREEN}✅ Loaded {fixed_count} fixed subagent(s) + subagent_run/subagent_create tools{Colors.RESET}")
             else:
                 print(f"{Colors.YELLOW}⚠️  No subagent tools loaded{Colors.RESET}")
         except Exception as e:
@@ -616,7 +616,7 @@ async def run_agent(workspace_dir: Path, *, config=None, input=None, output=None
         system_prompt = system_prompt.replace("{AGENT_MEMORY}", agent_memory)
         print(f"{Colors.GREEN}✅ Loaded project memory from AGENT.md ({len(agent_memory)} chars){Colors.RESET}")
     else:
-        system_prompt = system_prompt.replace("{AGENT_MEMORY}", "(No project memory yet. Use update_memory to create one.)")
+        system_prompt = system_prompt.replace("{AGENT_MEMORY}", "(No project memory yet. Use memory_update to create one.)")
 
     # 6b. Inject Skills Metadata into System Prompt (Progressive Disclosure - Level 1)
     if skill_loader:

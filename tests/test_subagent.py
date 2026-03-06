@@ -72,7 +72,7 @@ class TestSubagentLoader:
             system_prompt: You are a test agent.
             max_steps: 10
             allowed_tools:
-              - read_file
+              - file_read
               - bash
             """)
         )
@@ -85,7 +85,7 @@ class TestSubagentLoader:
         assert config.description == "A test subagent"
         assert config.system_prompt.strip() == "You are a test agent."
         assert config.max_steps == 10
-        assert config.allowed_tools == ["read_file", "bash"]
+        assert config.allowed_tools == ["file_read", "bash"]
 
     def test_load_missing_fields(self, tmp_path):
         yaml_file = tmp_path / "SUBAGENT.yaml"
@@ -206,7 +206,7 @@ class TestSubagentLoader:
         assert "## Available Subagents" in prompt
         assert "`explorer`" in prompt
         assert "`bg-worker` [background]" in prompt
-        assert "run_subagent(name, task)" in prompt
+        assert "subagent_run(name, task)" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +244,7 @@ class TestRunSubagentTool:
     def test_name_and_parameters(self):
         loader = SubagentLoader("/nonexistent")
         tool = RunSubagentTool(loader)
-        assert tool.name == "run_subagent"
+        assert tool.name == "subagent_run"
         params = tool.parameters
         assert "name" in params["properties"]
         assert "task" in params["properties"]
@@ -420,7 +420,7 @@ class TestRunSubagentTool:
 class TestCreateSubagentTool:
     def test_name_and_parameters(self):
         tool = CreateSubagentTool()
-        assert tool.name == "create_subagent"
+        assert tool.name == "subagent_create"
         params = tool.parameters
         assert "task" in params["properties"]
         assert "system_prompt" in params["properties"]
@@ -787,7 +787,7 @@ class TestBackgroundWrapper:
 
 class TestCreateSubagentToolsFactory:
     def test_always_returns_three_tools(self, tmp_path):
-        """Factory should always return exactly 3 tools: run_subagent, create_subagent, subagent_cancel."""
+        """Factory should always return exactly 3 tools: subagent_run, subagent_create, subagent_cancel."""
         tools, loader = create_subagent_tools(str(tmp_path))
         assert len(tools) == 3
         assert any(isinstance(t, RunSubagentTool) for t in tools)

@@ -25,7 +25,7 @@ class MemoryTool(Tool):
 
     @property
     def name(self) -> str:
-        return "update_memory"
+        return "memory_update"
 
     @property
     def description(self) -> str:
