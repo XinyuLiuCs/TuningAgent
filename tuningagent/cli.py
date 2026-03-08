@@ -17,6 +17,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 
 from tuningagent.agent import Agent
+from tuningagent.benchmark import TERMINAL_BENCH_PROFILES, TerminalBenchRunConfig, TerminalBenchRunner
 from tuningagent.config import Config
 from tuningagent.schema import Message
 from tuningagent.llm.model_pool import ModelPool
@@ -404,7 +405,152 @@ Examples:
         help="Log filename to read (optional, shows directory if omitted)",
     )
 
+    benchmark_parser = subparsers.add_parser(
+        "benchmark",
+        help="Run benchmark integrations",
+    )
+    benchmark_parser.add_argument(
+        "--bench-dir",
+        default="bench/terminal-bench",
+        help="Terminal-Bench repository directory",
+    )
+    benchmark_parser.add_argument(
+        "--tb-executable",
+        default=".venv/bin/tb",
+        help="Path to the tb executable, relative to --bench-dir or absolute",
+    )
+    dataset_group = benchmark_parser.add_mutually_exclusive_group()
+    dataset_group.add_argument(
+        "--dataset-path",
+        default="original-tasks",
+        help="Local Terminal-Bench dataset path relative to --bench-dir",
+    )
+    dataset_group.add_argument(
+        "--dataset",
+        default=None,
+        help="Registry dataset name or name==version",
+    )
+    benchmark_parser.add_argument(
+        "--profile",
+        choices=sorted(TERMINAL_BENCH_PROFILES),
+        default="curated-smoke",
+        help="Built-in Terminal-Bench task profile",
+    )
+    benchmark_parser.add_argument(
+        "--no-profile",
+        action="store_true",
+        help="Disable built-in profile selection and use only explicit --task-id values",
+    )
+    benchmark_parser.add_argument(
+        "--list-profiles",
+        action="store_true",
+        help="List built-in Terminal-Bench task profiles and exit",
+    )
+    benchmark_parser.add_argument(
+        "--task-id",
+        action="append",
+        default=[],
+        help="Additional task IDs to run. Can be provided multiple times",
+    )
+    benchmark_parser.add_argument(
+        "--output-path",
+        default="runs/tuningagent",
+        help="Output directory relative to --bench-dir",
+    )
+    benchmark_parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Explicit Terminal-Bench run ID",
+    )
+    benchmark_parser.add_argument(
+        "--agent",
+        default="tuningagent",
+        help="Terminal-Bench agent name. Use 'tuningagent' to run the local TuningAgent adapter.",
+    )
+    benchmark_parser.add_argument(
+        "--model",
+        default=None,
+        help="Model passed through to Terminal-Bench",
+    )
+    benchmark_parser.add_argument(
+        "--agent-import-path",
+        default=None,
+        help="Custom Terminal-Bench agent import path",
+    )
+    benchmark_parser.add_argument(
+        "--agent-kwarg",
+        action="append",
+        default=[],
+        help="Additional Terminal-Bench agent kwargs in key=value form",
+    )
+    benchmark_parser.add_argument(
+        "--n-concurrent",
+        type=int,
+        default=1,
+        help="Number of concurrent Terminal-Bench trials",
+    )
+    benchmark_parser.add_argument(
+        "--n-attempts",
+        type=int,
+        default=1,
+        help="Number of attempts per task",
+    )
+    benchmark_parser.add_argument(
+        "--no-rebuild",
+        action="store_true",
+        help="Skip docker rebuild in Terminal-Bench",
+    )
+    benchmark_parser.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Keep docker resources after the run",
+    )
+    benchmark_parser.add_argument(
+        "--keep-proxy-env",
+        action="store_true",
+        help="Keep current proxy environment variables instead of stripping them",
+    )
+    benchmark_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print normalized metadata without executing Terminal-Bench",
+    )
+
     return parser.parse_args()
+
+
+def run_benchmark_command(args: argparse.Namespace) -> int:
+    """Execute benchmark subcommands."""
+
+    if args.list_profiles:
+        print("Built-in Terminal-Bench profiles:")
+        for name, task_ids in sorted(TERMINAL_BENCH_PROFILES.items()):
+            print(f"  {name}: {', '.join(task_ids)}")
+        return 0
+
+    config = TerminalBenchRunConfig(
+        bench_dir=Path(args.bench_dir),
+        tb_executable=args.tb_executable,
+        dataset_path=None if args.dataset else args.dataset_path,
+        dataset=args.dataset,
+        profile=None if args.no_profile else args.profile,
+        task_ids=args.task_id,
+        output_path=args.output_path,
+        run_id=args.run_id,
+        agent=args.agent,
+        model=args.model,
+        agent_import_path=args.agent_import_path,
+        agent_kwargs=args.agent_kwarg,
+        n_concurrent=args.n_concurrent,
+        n_attempts=args.n_attempts,
+        no_rebuild=args.no_rebuild,
+        cleanup=not args.no_cleanup,
+        strip_proxy_env=not args.keep_proxy_env,
+        dry_run=args.dry_run,
+    )
+    summary = TerminalBenchRunner(config).run()
+    print(json.dumps(summary.model_dump(mode="json"), indent=2, ensure_ascii=False))
+    return 0
 
 
 async def initialize_base_tools(config: Config):
@@ -1142,6 +1288,8 @@ def main():
         else:
             show_log_directory(open_file_manager=True)
         return
+    if args.command == "benchmark":
+        raise SystemExit(run_benchmark_command(args))
 
     # Determine workspace directory
     # Expand ~ to user home directory for portability
