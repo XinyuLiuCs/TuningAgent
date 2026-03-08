@@ -44,6 +44,13 @@ A **minimal viable** agent evaluation framework for research and learning:
 - Background mode: non-blocking, result written to `.subagent/{id}.md`, main agent polls via `file_read`
 - Execution control: Esc cancels all (foreground + background), per-subagent cancel via `subagent_cancel`
 
+### 6. Benchmark Integration
+- Built-in `benchmark` CLI entry for Terminal-Bench
+- Built-in task profiles: `curated-smoke` and `curated-core`
+- Supports local datasets (`--dataset-path`) and registry datasets (`--dataset`)
+- Normalizes Terminal-Bench raw output into `tuningagent_summary.json`
+- Ships a local TuningAgent Terminal-Bench adapter reusing the existing agent loop, model pool, logger, and file/bash tools
+
 ## Design Philosophy
 
 ### ReAct Agent Loop
@@ -213,6 +220,53 @@ python -m tuningagent.cli
 tuningagent
 ```
 
+### Benchmark With Terminal-Bench
+
+Prepare the benchmark dependency once:
+
+```bash
+cd bench/terminal-bench
+uv sync
+cd ../..
+```
+
+List built-in profiles:
+
+```bash
+python -m tuningagent.cli benchmark --list-profiles
+```
+
+Smoke test on the bundled local dataset:
+
+```bash
+python -m tuningagent.cli benchmark \
+  --bench-dir bench/terminal-bench \
+  --profile curated-smoke \
+  --run-id tb-smoke-20260308
+```
+
+Run against a registry dataset only:
+
+```bash
+python -m tuningagent.cli benchmark \
+  --bench-dir bench/terminal-bench \
+  --dataset terminal-bench-core==0.1.1 \
+  --no-profile \
+  --run-id tb-core-20260308
+```
+
+Key flags:
+- `--task-id`: append one or more explicit tasks
+- `--no-profile`: disable the default `curated-smoke` profile
+- `--dataset-path`: run a local dataset under `bench/terminal-bench`
+- `--dataset`: run a registry dataset such as `name==version`
+- `--dry-run`: print normalized run metadata without executing Terminal-Bench
+- `--keep-proxy-env`: keep `ALL_PROXY` / `all_proxy` instead of stripping them
+
+Artifacts are written under `bench/terminal-bench/runs/tuningagent/<run-id>/`:
+- `results.json`: raw Terminal-Bench output
+- `tuningagent_summary.json`: normalized summary in TuningAgent schema
+
 ## Project Structure
 
 ```
@@ -225,6 +279,9 @@ TuningAgent/
 │   │   ├── openai_client.py
 │   │   ├── llm_wrapper.py
 │   │   └── model_pool.py    # Multi-model pool
+│   ├── benchmark/            # Benchmark integrations
+│   │   ├── terminal_bench.py
+│   │   └── terminal_bench_agent.py
 │   ├── tools/                # Tool implementations
 │   │   ├── bash_tool.py
 │   │   ├── file_tools.py
@@ -238,6 +295,8 @@ TuningAgent/
 │   ├── config/               # Configuration files
 │   │   ├── subagents/          # Fixed subagent definitions (SUBAGENT.yaml)
 │   └── cli.py                # CLI entry point
+├── docs/                     # Benchmark and usage docs
+├── bench/                    # External benchmark workspace (Terminal-Bench)
 ├── tests/                    # Tests
 └── pyproject.toml
 ```
@@ -270,10 +329,12 @@ TuningAgent/
 - [ ] Failure case collection
 - [ ] Skills unit tests and benchmarks
 
-### Phase 4: Evaluation Pipeline
-- [ ] Define evaluation task sets
-- [ ] LLM-as-judge implementation
-- [ ] Evaluation report generation
+### Phase 4: Benchmark Pipeline ✅
+- [x] Terminal-Bench CLI integration
+- [x] Built-in benchmark profiles
+- [x] Normalized benchmark summary output
+- [ ] More benchmark adapters beyond Terminal-Bench
+- [ ] Evaluation report generation / dashboards
 
 ## Tech Stack
 
@@ -281,6 +342,7 @@ TuningAgent/
 - **LLM clients**: Anthropic, OpenAI, AWS Bedrock
 - **Core libs**: Pydantic, HTTPX, PyYAML
 - **Skills**: 10 Claude Skills
+- **Benchmarking**: Terminal-Bench, Docker
 
 ## Limitations
 
@@ -292,7 +354,7 @@ TuningAgent/
 Issues and pull requests are welcome. Current priorities:
 - Execution visualization & failure archiving (Phase 2 remaining)
 - Tool evaluation framework (Phase 3)
-- Evaluation pipeline automation (Phase 4)
+- Benchmark expansion and reporting automation (Phase 4)
 
 ## License
 
@@ -304,3 +366,5 @@ MIT License — built on [Mini-Agent](https://github.com/MiniMax-AI/Mini-Agent)
 - **Claude Skills**: https://github.com/anthropics/skills
 - **Anthropic API**: https://docs.anthropic.com
 - **OpenAI API**: https://platform.openai.com
+- **Terminal-Bench guide (CN)**: ./docs/terminal-bench-evaluation-guide-cn.md
+- **Terminal-Bench datasets quick reference (CN)**: ./docs/terminal-bench-datasets-quick-cn.md
