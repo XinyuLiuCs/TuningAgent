@@ -262,7 +262,7 @@ class OpenAIClient(LLMClientBase):
         """Minimal API call to verify connectivity."""
         await self.client.chat.completions.create(
             model=self.model,
-            max_tokens=1,
+            max_tokens=16,  # OpenAI 要求 max_output_tokens >= 16
             messages=[{"role": "user", "content": "hi"}],
         )
         return True
