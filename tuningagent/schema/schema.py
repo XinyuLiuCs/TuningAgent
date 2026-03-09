@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LLMProvider(str, Enum):
@@ -95,3 +96,32 @@ class HealthCheckResult(BaseModel):
     available: bool
     latency_ms: float = 0.0
     error: str | None = None
+
+
+class BenchmarkTaskResult(BaseModel):
+    """Normalized result for a single benchmark task."""
+
+    task_id: str
+    trial_name: str
+    resolved: bool
+    failure_mode: str | None = None
+    parser_results: dict[str, str] = Field(default_factory=dict)
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    recording_path: str | None = None
+
+
+class BenchmarkRunSummary(BaseModel):
+    """Normalized result for a benchmark run."""
+
+    benchmark: str
+    run_id: str
+    dataset: str
+    task_ids: list[str]
+    resolved_count: int
+    unresolved_count: int
+    accuracy: float
+    raw_results_path: str
+    summary_path: str | None = None
+    created_at: datetime
+    tasks: list[BenchmarkTaskResult]
