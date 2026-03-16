@@ -368,3 +368,4 @@ MIT License — built on [Mini-Agent](https://github.com/MiniMax-AI/Mini-Agent)
 - **OpenAI API**: https://platform.openai.com
 - **Terminal-Bench guide (CN)**: ./docs/terminal-bench-evaluation-guide-cn.md
 - **Terminal-Bench datasets quick reference (CN)**: ./docs/terminal-bench-datasets-quick-cn.md
+- **Agent interview Q&A (CN)**: ./docs/agent-interview-qa.md
