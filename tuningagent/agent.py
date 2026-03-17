@@ -61,7 +61,7 @@ class Agent:
         tools: list[Tool],
         max_steps: int = 50,
         workspace_dir: str = "./workspace",
-        token_limit: int = 80000,  # Summary triggered when tokens exceed this value
+        token_limit: int = 160000,  # Summary triggered when tokens exceed this value
         logger: Optional[AgentLogger] = None,
     ):
         self.llm = llm_client

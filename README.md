@@ -21,10 +21,35 @@ A **minimal viable** agent evaluation framework for research and learning:
 - Per-model stats (tokens, latency, errors)
 - Health check (parallel probe on startup, `/health` on demand)
 
-### 2. Context Tracing
+### 2. Context Management
+- Automatic context compression — when token usage exceeds `token_limit` (default 160K), intermediate execution history is summarized while preserving all user messages
+- Dual token tracking: local estimation via tiktoken (`cl100k_base`) + API-reported token counts; compression triggers when either exceeds the threshold
 - Structured JSONL logs (session / turn / step hierarchy with full message and tool call records)
 - Conversation rewind (`/rewind` — truncate by turn, then switch model or rephrase)
 - Context debugging (`/context` exports messages + tool schemas, `/log` browses log files)
+
+#### Token Limits & Model Context Windows
+
+Current Claude models provide a 200K-token context window (Opus 4.6 / Sonnet 4.6 support 1M beta). The default `token_limit` is set to **160,000** (80% of 200K), leaving headroom for system prompt, tool schemas, and model output.
+
+| Scope | Default `token_limit` | Rationale |
+|-------|----------------------|-----------|
+| Main agent | 160,000 | 80% of 200K context window |
+| Dynamic subagent | 160,000 | Same as main agent |
+| Fixed subagent (SUBAGENT.yaml) | 160,000 | Overridable per subagent |
+| code-explorer / log-explorer | 400,000 | Higher limit for exploration-heavy tasks |
+
+Configure in `config.yaml`:
+
+```yaml
+token_limit: 160000  # Context compression triggered when tokens exceed this value
+```
+
+Per-subagent override in `SUBAGENT.yaml`:
+
+```yaml
+token_limit: 400000
+```
 
 ### 3. Tools & Skills
 - 11 built-in tools (bash + background process management, file read/write/edit, project memory, subagent tools, mode switch)

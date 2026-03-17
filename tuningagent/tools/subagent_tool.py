@@ -508,7 +508,7 @@ class CreateSubagentTool(Tool):
         llm_client=None,
         all_tools: Optional[List[Tool]] = None,
         default_max_steps: int = 30,
-        default_token_limit: int = 80000,
+        default_token_limit: int = 160000,
         default_timeout: int = DEFAULT_TIMEOUT,
     ):
         self._llm_client = llm_client

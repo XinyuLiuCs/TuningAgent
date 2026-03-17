@@ -44,7 +44,7 @@ class AgentConfig(BaseModel):
     """Agent configuration"""
 
     max_steps: int = 50
-    token_limit: int = 80000  # Summary triggered when tokens exceed this value
+    token_limit: int = 160000  # Summary triggered when tokens exceed this value
     workspace_dir: str = "./workspace"
     system_prompt_path: str = "system_prompt.md"
 

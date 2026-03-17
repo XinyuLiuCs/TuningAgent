@@ -21,7 +21,7 @@ class SubagentConfig:
     system_prompt: str
     allowed_tools: Optional[List[str]] = None
     max_steps: int = 30
-    token_limit: int = 80000
+    token_limit: int = 160000
     run_in_background: bool = False
     timeout: int = 300
 
@@ -59,7 +59,7 @@ class SubagentLoader:
             system_prompt=system_prompt,
             allowed_tools=data.get("allowed_tools"),
             max_steps=data.get("max_steps", 30),
-            token_limit=data.get("token_limit", 80000),
+            token_limit=data.get("token_limit", 160000),
             run_in_background=data.get("run_in_background", False),
             timeout=data.get("timeout", 300),
         )
